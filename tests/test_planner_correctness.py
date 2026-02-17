@@ -74,3 +74,34 @@ def test_recommend_uses_shipped_units_for_cube_and_weight():
     assert rec["excess_units"] == 3
     assert rec["weight_utilization"] == round(min(1.0, expected_weight / eq["OCEAN"][0].max_payload_kg), 4)
     assert rec["cube_utilization"] == round(min(1.0, expected_volume / eq["OCEAN"][0].volume_m3), 4)
+
+
+def test_recommend_non_air_equipment_name_casing_and_spaces_are_normalized():
+    eq = {
+        "OCEAN": [Equipment("40dv", "OCEAN", 12.03, 2.35, 2.39, 26000, None)],
+    }
+    rule = PackagingRule(6, 2, 3, 0.5, 0.4, 0.3)
+    kwargs = dict(
+        sku_id=1,
+        part_number="P",
+        coo="CN",
+        need_date=date(2026, 1, 20),
+        requested_units=39,
+        pack_rule=rule,
+        equipment_by_mode=eq,
+        lead_table={("CN", "OCEAN"): 30},
+        sku_lead_override={},
+    )
+
+    rec_clean = recommend_modes(
+        rates=[{"mode": "OCEAN", "equipment_name": "40DV", "pricing_model": "per_container", "rate_value": 1000, "fixed_fee": 5, "surcharge": 7}],
+        **kwargs,
+    )[0]
+    rec_mixed = recommend_modes(
+        rates=[{"mode": "OCEAN", "equipment_name": "  40dV  ", "pricing_model": "per_container", "rate_value": 1000, "fixed_fee": 5, "surcharge": 7}],
+        **kwargs,
+    )[0]
+
+    assert rec_clean["mode"] == rec_mixed["mode"]
+    assert rec_clean["equipment_count"] == rec_mixed["equipment_count"]
+    assert rec_clean["cost_total"] == rec_mixed["cost_total"]

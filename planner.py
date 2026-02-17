@@ -215,7 +215,9 @@ def recommend_modes(
             eq_count = estimate_equipment_count(total_volume, total_weight, eq)
             rate = next((
                 r for r in rates
-                if norm_mode(r.get("mode")) == mode and r.get("equipment_name") == eq.name and str(r.get("pricing_model", "")).lower() in {"per_container", "per_load"}
+                if norm_mode(r.get("mode")) == mode
+                and (r.get("equipment_name") or "").strip().upper() == (eq.name or "").strip().upper()
+                and str(r.get("pricing_model", "")).lower() in {"per_container", "per_load"}
             ), None)
             if rate:
                 cost = eq_count * rate["rate_value"] + (rate["fixed_fee"] or 0) + (rate["surcharge"] or 0)
