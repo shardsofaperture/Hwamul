@@ -87,7 +87,7 @@ def normalize_bools(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
 
 def equipment_from_row(row: dict) -> Equipment:
     return Equipment(
-        name=row.get("name"),
+        name=row.get("equipment_code") or row.get("name"),
         mode=row.get("mode"),
         length_m=float(row.get("length_m") or 0),
         width_m=float(row.get("width_m") or 0),
@@ -285,6 +285,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             """
             SELECT
                 ep.id AS equipment_id,
+                ep.equipment_code,
                 ep.name,
                 ep.mode,
                 COALESCE(ser.allowed, 1) AS allowed
@@ -292,7 +293,8 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             LEFT JOIN sku_equipment_rules ser
               ON ser.equipment_id = ep.id
              AND ser.sku_id = ?
-            ORDER BY UPPER(ep.mode), UPPER(ep.name)
+            WHERE ep.active = 1
+            ORDER BY UPPER(ep.mode), UPPER(ep.equipment_code), UPPER(ep.name)
             """,
             conn,
             params=(int(selected_sku_id),),
@@ -302,9 +304,10 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             equipment_rules,
             width="stretch",
             hide_index=True,
-            disabled=["equipment_id", "name", "mode"],
+            disabled=["equipment_id", "equipment_code", "name", "mode"],
             column_config={
                 "equipment_id": st.column_config.NumberColumn("equipment_id"),
+                "equipment_code": st.column_config.TextColumn("equipment_code"),
                 "name": st.column_config.TextColumn("equipment"),
                 "mode": st.column_config.TextColumn("mode"),
                 "allowed": st.column_config.CheckboxColumn("allowed"),
@@ -593,7 +596,7 @@ Example: CN + OCEAN = 35 days.""")
             with c1:
                 ship_date = st.date_input("Ship date", value=date.today(), help="Shipment date in YYYY-MM-DD. Example: 2026-01-15")
                 mode = st.text_input("Mode", value="OCEAN", help=build_help_text("rate_cards", "mode"))
-                equipment = st.text_input("Equipment", value="40DV", help=build_help_text("rate_cards", "equipment"))
+                equipment = st.text_input("Equipment", value="CNT_40_DRY_STD", help=build_help_text("rate_cards", "equipment"))
                 service_scope = st.selectbox("Service scope", ["P2P", "P2D", "D2P", "D2D"], help=build_help_text("rate_cards", "service_scope"))
             with c2:
                 origin_type = st.text_input("Origin type", value="PORT", help=build_help_text("rate_cards", "origin_type"))
@@ -827,7 +830,7 @@ elif section == "Planner":
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
         skus = read_sku_catalog()
-        eq = read_table("equipment_presets")
+        eq = pd.read_sql_query("SELECT * FROM equipment_presets WHERE active = 1", get_conn())
         rates = read_table("rates")
         rate_cards = read_table("rate_card")
         rate_charges = read_table("rate_charge")
@@ -909,7 +912,7 @@ elif section == "Planner":
         render_about("Cube Out", "Select multiple SKUs and calculate how many equipment units are required based on each SKU default pack rule. Enter required quantity in the SKU UOM (KG/METER/GALLON/EA/etc.).")
         skus = read_sku_catalog()
         packs = read_table("packaging_rules")
-        eq = read_table("equipment_presets")
+        eq = pd.read_sql_query("SELECT * FROM equipment_presets WHERE active = 1", get_conn())
 
         if skus.empty or packs.empty or eq.empty:
             st.info("Need SKUs, packaging rules, and equipment presets before running cube-out.")
@@ -1000,7 +1003,7 @@ elif section == "Planner":
             num_rows="dynamic",
             width="stretch",
         )
-        eq = read_table("equipment_presets")
+        eq = pd.read_sql_query("SELECT * FROM equipment_presets WHERE active = 1", get_conn())
         if not eq.empty:
             eq_map = {norm_mode(mode): equipment_from_row(group.iloc[0].to_dict()) for mode, group in eq.groupby("mode")}
             shipments = build_shipments(demo.to_dict("records"), eq_map)

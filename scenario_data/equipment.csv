@@ -1,4 +1,4 @@
-mode,equipment,length_m,width_m,height_m,max_payload_kg,volumetric_factor
-AIR,ULD,1.5,1.5,1.5,6800,167
-OCEAN,40DV,12.03,2.35,2.39,26700,
-TRUCK,53FT,16.15,2.59,2.70,20000,
+mode,equipment_code,equipment,length_m,width_m,height_m,max_payload_kg,volumetric_factor,is_reefer,is_high_cube,active,equipment_class
+AIR,AIR_STD,Air Freight (Chargeable Weight),1.0,1.0,1.0,50000,167,0,0,1,ULD
+OCEAN,CNT_40_DRY_STD,40' Dry (STD),12.03,2.35,2.39,26700,,0,0,1,CONTAINER
+TRUCK,TRL_53_STD,53' Trailer (STD),16.15,2.59,2.70,20000,,0,0,1,TRAILER

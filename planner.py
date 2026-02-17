@@ -19,6 +19,10 @@ def norm_mode(mode: str | None) -> str:
     return (mode or "").strip().upper()
 
 
+def norm_equipment_code(code: str | None) -> str:
+    return (code or "").strip().upper()
+
+
 def safe_float(value: object, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -205,7 +209,12 @@ def recommend_modes(
         if mode == "AIR":
             eq = equipments[0]
             chargeable = chargeable_air_weight_kg(total_weight, total_volume, eq.volumetric_factor or 167)
-            rate = next((r for r in rates if norm_mode(r.get("mode")) == "AIR" and str(r.get("pricing_model", "")).lower() == "per_kg"), None)
+            rate = next((
+                r for r in rates
+                if norm_mode(r.get("mode")) == "AIR"
+                and str(r.get("pricing_model", "")).lower() == "per_kg"
+                and (not r.get("equipment_name") or norm_equipment_code(r.get("equipment_name")) == norm_equipment_code(eq.name))
+            ), None)
             if rate:
                 cost = max(rate["minimum_charge"] or 0, chargeable * rate["rate_value"]) + (rate["fixed_fee"] or 0)
             eq_count = 1
@@ -216,7 +225,7 @@ def recommend_modes(
             rate = next((
                 r for r in rates
                 if norm_mode(r.get("mode")) == mode
-                and (r.get("equipment_name") or "").strip().upper() == (eq.name or "").strip().upper()
+                and norm_equipment_code(r.get("equipment_name")) == norm_equipment_code(eq.name)
                 and str(r.get("pricing_model", "")).lower() in {"per_container", "per_load"}
             ), None)
             if rate:
@@ -248,13 +257,13 @@ def recommend_modes(
                 main_cost = float(result["grand_total"])
                 details.extend(result["items"])
             if service_scope in {"P2D", "D2D"}:
-                truck_leg = _leg("TRUCK", "53FT", "D2D", "CITY", dest_port, "CITY", plant_loc, miles, 1.0, total_weight, {"flatrack": False, "over_height": False, "over_width": False, "over_height_width": False})
+                truck_leg = _leg("TRUCK", "TRL_53_STD", "D2D", "CITY", dest_port, "CITY", plant_loc, miles, 1.0, total_weight, {"flatrack": False, "over_height": False, "over_width": False, "over_height_width": False})
                 if truck_leg:
                     _, result = truck_leg
                     domestic_cost += float(result["grand_total"])
                     details.extend(result["items"])
             if service_scope in {"D2P", "D2D"}:
-                truck_leg = _leg("TRUCK", "53FT", "D2D", "CITY", supplier_loc, "CITY", origin_port, miles, 1.0, total_weight, {"flatrack": False, "over_height": False, "over_width": False, "over_height_width": False})
+                truck_leg = _leg("TRUCK", "TRL_53_STD", "D2D", "CITY", supplier_loc, "CITY", origin_port, miles, 1.0, total_weight, {"flatrack": False, "over_height": False, "over_width": False, "over_height_width": False})
                 if truck_leg:
                     _, result = truck_leg
                     domestic_cost += float(result["grand_total"])
