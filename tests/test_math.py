@@ -23,6 +23,28 @@ def test_pack_rounding_with_moq_and_increment():
     assert rounded_order_packs(240, rule) == 10
 
 
+def test_pack_cube_supports_cm_input_for_pallets_and_crates():
+    cm_rule = PackagingRule(
+        part_number="PALLET",
+        units_per_pack=1,
+        kg_per_unit=10,
+        pack_tare_kg=1,
+        dim_l_m=120,
+        dim_w_m=80,
+        dim_h_m=90,
+    )
+    m_rule = PackagingRule(
+        part_number="PALLET",
+        units_per_pack=1,
+        kg_per_unit=10,
+        pack_tare_kg=1,
+        dim_l_m=1.2,
+        dim_w_m=0.8,
+        dim_h_m=0.9,
+    )
+    assert cm_rule.pack_cube_m3 == m_rule.pack_cube_m3
+
+
 def test_chargeable_air_weight():
     assert chargeable_air_weight_kg(120, 1.0, 167) == 167
     assert chargeable_air_weight_kg(200, 1.0, 167) == 200
