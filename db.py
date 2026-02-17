@@ -4,11 +4,12 @@ Uses SQLite with lightweight startup migrations.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-DB_PATH = Path("planner.db")
+DB_PATH = Path(os.getenv("PLANNER_DB_PATH", "planner.db"))
 
 
 MIGRATIONS: list[tuple[int, str]] = [

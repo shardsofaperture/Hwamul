@@ -5,7 +5,7 @@ Local planning app for logistics mode selection + cube-out.
 ## Tech Stack
 - Python 3.11+
 - Streamlit UI
-- SQLite storage (local file `planner.db`)
+- SQLite storage (`planner.db` in dev, `%APPDATA%\ProductionPlanner\planner.db` in packaged Windows app)
 - Dataclass-based strongly typed domain models
 
 ## Setup
@@ -15,9 +15,24 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 ```
 
-## Run
+## Run (development)
 ```bash
 streamlit run app.py
+```
+
+## Windows desktop launcher
+`launcher.py` starts Streamlit on a dynamically selected localhost port and opens the app inside a native desktop window using `pywebview` (Edge WebView2).
+
+Behavior:
+- Picks a free `127.0.0.1` TCP port and retries to avoid conflicts.
+- Starts Streamlit bound to `127.0.0.1` only (no external browser launch).
+- Opens a desktop window pointed at `http://127.0.0.1:<port>`.
+- Stores SQLite at `%APPDATA%\ProductionPlanner\planner.db` (creates folder if missing).
+- Stops Streamlit when the desktop window closes.
+
+Run launcher directly on Windows:
+```bash
+python launcher.py
 ```
 
 ## What the app includes
@@ -63,3 +78,27 @@ Tests cover:
 - Schema migrations run at app startup.
 - Seed data is automatically loaded if tables are empty.
 - All persistence is local-only in SQLite.
+
+
+## Build single-file Windows EXE (PyInstaller)
+Install Windows deps:
+```bash
+pip install -r requirements-win.txt
+```
+
+Build from repo root:
+```bash
+pyinstaller --clean --noconfirm ProductionPlanner.spec
+```
+
+Output executable:
+- `dist/ProductionPlanner.exe`
+
+Run packaged app:
+```bash
+.\dist\ProductionPlanner.exe
+```
+
+Notes:
+- Requires Edge WebView2 runtime on Windows.
+- The spec includes `launcher.py` as entrypoint plus Streamlit app modules and `templates/` assets.
