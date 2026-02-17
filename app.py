@@ -133,6 +133,8 @@ def render_docs_page(doc_file: str) -> None:
 
 
 st.title("Local Logistics Planning App")
+if hasattr(st.sidebar, "page_link"):
+    st.sidebar.page_link("pages/quick_plan.py", label="Quick Plan", icon="📦")
 section = st.sidebar.radio("Section", ["Planner", "Admin", "Docs"])
 
 if section == "Admin":
