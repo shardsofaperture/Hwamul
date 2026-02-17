@@ -273,7 +273,27 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         c4.text_input("Description", value=str(selected_sku["description"] or ""), disabled=True)
 
         pack_source = pd.read_sql_query(
-            "SELECT * FROM packaging_rules WHERE sku_id = ? ORDER BY is_default DESC, id",
+            """
+            SELECT
+                id,
+                sku_id,
+                pack_name,
+                pack_type,
+                is_default,
+                units_per_pack,
+                kg_per_unit,
+                pack_tare_kg,
+                dim_l_m AS dim_l_cm,
+                dim_w_m AS dim_w_cm,
+                dim_h_m AS dim_h_cm,
+                min_order_packs,
+                increment_packs,
+                stackable,
+                max_stack
+            FROM packaging_rules
+            WHERE sku_id = ?
+            ORDER BY is_default DESC, id
+            """,
             get_conn(),
             params=(selected_sku_id,),
         )
@@ -339,7 +359,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             width="stretch",
             column_order=[
                 "id", "sku_id", "pack_name", "pack_type", "units_per_pack", "kg_per_unit", "pack_tare_kg",
-                "dim_l_m", "dim_w_m", "dim_h_m", "min_order_packs", "increment_packs", "stackable", "max_stack", "is_default"
+                "dim_l_cm", "dim_w_cm", "dim_h_cm", "min_order_packs", "increment_packs", "stackable", "max_stack", "is_default"
             ],
             disabled=["sku_id"],
             key="pack_rules_editor",
@@ -353,7 +373,9 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             if errors:
                 st.error("; ".join(errors))
             else:
-                ok, err = save_grid("packaging_rules", pack_source, edited, ["id"])
+                original_for_save = pack_source.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
+                edited_for_save = edited.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
+                ok, err = save_grid("packaging_rules", original_for_save, edited_for_save, ["id"])
                 if ok:
                     st.success("Pack rules saved")
                     st.rerun()

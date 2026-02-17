@@ -17,7 +17,7 @@ Templates are generated from in-app field specifications, so column names/exampl
 - If validation fails, use the row/field message in UI to fix and retry.
 
 ## Pack-rule unit guidance (important)
-- For `pack_rules` dimensions (`dim_l_m`, `dim_w_m`, `dim_h_m`), **centimeters are preferred** for pallet/crate uploads.
+- For `pack_rules` dimensions (`dim_l_cm`, `dim_w_cm`, `dim_h_cm`), use **centimeters** for pallet/cargo uploads with individual handling units.
   - Example: length `120`, width `80`, height `90`.
 - Legacy meter values are still accepted.
   - Example: length `1.20`, width `0.80`, height `0.90`.

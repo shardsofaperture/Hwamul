@@ -18,6 +18,16 @@ def _read_csv(name: str) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def _pack_dim(pack: dict[str, str], axis: str) -> float:
+    """Read pack dimensions from cm-first headers with legacy meter fallback."""
+    cm_key = f"dim_{axis}_cm"
+    m_key = f"dim_{axis}_m"
+    raw = pack.get(cm_key)
+    if raw is None or str(raw).strip() == "":
+        raw = pack[m_key]
+    return float(raw)
+
+
 def _write_csv(name: str, rows: list[dict[str, Any]]) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / name
@@ -107,9 +117,9 @@ def run_acceptance_pipeline() -> dict[str, Any]:
             units_per_pack=float(pack["units_per_pack"]),
             kg_per_unit=float(pack["kg_per_unit"]),
             pack_tare_kg=float(pack["pack_tare_kg"]),
-            dim_l_m=float(pack["dim_l_m"]),
-            dim_w_m=float(pack["dim_w_m"]),
-            dim_h_m=float(pack["dim_h_m"]),
+            dim_l_m=_pack_dim(pack, "l"),
+            dim_w_m=_pack_dim(pack, "w"),
+            dim_h_m=_pack_dim(pack, "h"),
             min_order_packs=int(pack["min_order_packs"]),
             increment_packs=int(pack["increment_packs"]),
             part_number=demand["part_number"],
