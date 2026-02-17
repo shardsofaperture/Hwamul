@@ -1,2 +1,2 @@
-sku,need_date,qty,coo_override,priority,notes
+part_number,need_date,qty,coo_override,priority,notes
 SKU-100,2026-03-10,250,,High,launch
