@@ -22,7 +22,7 @@ from db import (
     resolve_pack_rule_for_demand,
 )
 from models import Equipment, PackagingRule
-from planner import allocate_tranches, build_shipments, recommend_modes
+from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
 from seed import ensure_templates, seed_if_empty
 from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
@@ -139,6 +139,8 @@ if section == "Admin":
             "Rate cards",
             "Customs / HTS",
             "Rate Test",
+            "Phase defaults",
+            "Lanes",
             "Demand entry",
             "Data management",
         ],
@@ -546,6 +548,30 @@ Example: CN + OCEAN = 35 days.""")
                 st.dataframe(pd.DataFrame(result["items"]), width="stretch")
                 st.success(f"Grand total: {result['grand_total']} {result['currency']}")
 
+    elif admin_screen == "Phase defaults":
+        render_about("Phase defaults", "Configure default mode/service scope/manual lead by phase.")
+        source = read_table("phase_defaults")
+        if source.empty:
+            source = pd.DataFrame({"phase": ["Trial1", "Trial2", "Sample", "Speed-up", "Validation", "SOP"], "default_mode": ["AIR", "AIR", "OCEAN", "OCEAN", "OCEAN", "OCEAN"], "default_service_scope": ["P2D"] * 6, "manual_lead_override": [None] * 6})
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        if st.button("Save changes", key="save_phase_defaults"):
+            ok, err = save_grid("phase_defaults", source, edited, ["phase"])
+            if ok:
+                st.success("Phase defaults saved")
+            else:
+                st.error(f"Could not save phase defaults: {err}")
+
+    elif admin_screen == "Lanes":
+        render_about("Lanes", "Default service scope/miles per route.")
+        source = read_table("lanes")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        if st.button("Save changes", key="save_lanes"):
+            ok, err = save_grid("lanes", source, edited, ["id"])
+            if ok:
+                st.success("Lanes saved")
+            else:
+                st.error(f"Could not save lanes: {err}")
+
     elif admin_screen == "Demand entry":
         render_about("Demand entry", "Create/edit demand lines and optional CSV imports.\n\nPrerequisites: suppliers and SKUs exist.\n\nSteps: 1) Add lines with sku_id, need_date, qty. 2) Optionally import CSV. 3) Save.\n\nExample: sku_id 10, need_date 2026-04-01, qty 1200.")
         source = pd.read_sql_query("""
@@ -558,12 +584,12 @@ Example: CN + OCEAN = 35 days.""")
         render_field_guide("demand")
         edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("demand"), disabled=["part_number", "supplier_code", "sku_label"])
         st.caption("Optional CSV import")
-        upload = st.file_uploader("Upload demand csv", type=["csv"], help="CSV with part_number, supplier_code(optional), need_date YYYY-MM-DD, qty.")
+        upload = st.file_uploader("Upload demand csv", type=["csv"], help="CSV with part_number, supplier_code(optional), need_date YYYY-MM-DD, qty, optional phase/mode_override/service_scope/miles.")
         if upload is not None:
             imported = pd.read_csv(upload)
             st.write("Imported preview (editable)")
             with st.expander("Field guide (columns)", expanded=False):
-                st.markdown("Imported demand columns should include part_number, need_date (YYYY-MM-DD), qty (>=0), and optional supplier_code/coo_override/priority/notes.")
+                st.markdown("Imported demand columns should include part_number, need_date (YYYY-MM-DD), qty (>=0), and optional supplier_code/coo_override/priority/notes/phase/mode_override/service_scope/miles.")
             imported_edit = st.data_editor(imported, num_rows="dynamic", width="stretch")
             if st.button("Append imported rows"):
                 sku_catalog = read_sku_catalog()
@@ -580,7 +606,7 @@ Example: CN + OCEAN = 35 days.""")
                 if map_errors:
                     st.error("; ".join(map_errors))
                 else:
-                    cols = ["sku_id", "need_date", "qty", "coo_override", "priority", "notes"]
+                    cols = ["sku_id", "need_date", "qty", "coo_override", "priority", "notes", "phase", "mode_override", "service_scope", "miles"]
                     if "pack_rule_id" in merged.columns:
                         cols.append("pack_rule_id")
                     to_insert = merged[cols]
@@ -707,50 +733,69 @@ elif section == "Planner":
             st.dataframe(pd.DataFrame([r.__dict__ for r in rows]), width="stretch")
 
     with rec_tab:
-        render_about("Recommendations", "Calculate mode recommendations from lead times, equipment, and rates.\n\nPrerequisites: demand, pack rules, equipment exist.\n\nSteps: select line, optional pack override/manual lead, review output table.\n\nExample: set manual lead override to 2 days.")
+        render_about("Recommendations", "Calculate mode recommendations from lead times, equipment, and advanced rate cards.")
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
         skus = read_sku_catalog()
         eq = read_table("equipment_presets")
         rates = read_table("rates")
+        rate_cards = read_table("rate_card")
+        rate_charges = read_table("rate_charge")
         lead = read_table("lead_times")
         lead_ov = read_table("lead_time_overrides")
+        phase_defaults = read_table("phase_defaults")
 
         if not demands.empty and not packs.empty and not eq.empty:
-            line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line", help="Select demand line id to evaluate.")
-            d = demands[demands["id"] == line].iloc[0]
-            conn = get_conn()
-            d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
-            p = resolve_pack_rule_for_demand(conn, d_row)
-            sku_pack_options = packs[packs["sku_id"] == d["sku_id"]][["id", "pack_name"]]
-            selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"alloc_pack_override_{line}")
-            if st.button("Save pack override", key=f"save_alloc_pack_override_{line}"):
-                with conn:
-                    conn.execute("UPDATE demand_lines SET pack_rule_id = ? WHERE id = ?", (selected_override, int(d["id"])))
-                st.rerun()
-            rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys() if k in p.keys()})
-            need_date = pd.to_datetime(d["need_date"]).date()
-            coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("sku_id").loc[d["sku_id"], "default_coo"]
+            phase_filter = st.selectbox("Phase filter", ["All"] + sorted([str(x) for x in demands.get("phase", pd.Series(dtype=str)).fillna("").unique().tolist() if str(x)]), index=0)
+            demand_view = demands if phase_filter == "All" else demands[demands["phase"] == phase_filter]
+            if demand_view.empty:
+                st.info("No demand lines for selected phase")
+            else:
+                line = st.selectbox("Line for recommendation", demand_view["id"].tolist(), key="rec_line", help="Select demand line id to evaluate.")
+                d = demands[demands["id"] == line].iloc[0]
+                conn = get_conn()
+                d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
+                p = resolve_pack_rule_for_demand(conn, d_row)
+                sku_pack_options = packs[packs["sku_id"] == d["sku_id"]][["id", "pack_name"]]
+                selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"alloc_pack_override_{line}")
+                if st.button("Save pack override", key=f"save_alloc_pack_override_{line}"):
+                    with conn:
+                        conn.execute("UPDATE demand_lines SET pack_rule_id = ? WHERE id = ?", (selected_override, int(d["id"])))
+                    st.rerun()
+                rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys() if k in p.keys()})
+                need_date = pd.to_datetime(d["need_date"]).date()
+                coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("sku_id").loc[d["sku_id"], "default_coo"]
 
-            eq_by_mode: dict[str, list[Equipment]] = {}
-            for mode, g in eq.groupby("mode"):
-                eq_by_mode[mode] = [equipment_from_row(x) for x in g.to_dict("records")]
+                eq_by_mode: dict[str, list[Equipment]] = {}
+                for mode, g in eq.groupby("mode"):
+                    eq_by_mode[mode] = [equipment_from_row(x) for x in g.to_dict("records")]
 
-            lead_tbl = {(r["country_of_origin"], r["mode"]): int(r["lead_days"]) for _, r in lead.iterrows()}
-            part_number_ov = {(r["sku_id"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
-            recs = recommend_modes(
-                part_number=str(d["sku_id"]),
-                coo=coo,
-                need_date=need_date,
-                ordered_units=d["qty"],
-                pack_rule=rule,
-                equipment_by_mode=eq_by_mode,
-                rates=rates.to_dict("records"),
-                lead_table=lead_tbl,
-                part_number_lead_override=part_number_ov,
-                manual_lead_override=st.number_input("Manual lead override", min_value=0, value=0, help="Optional extra lead days >=0. Example: 3"),
-            )
-            st.dataframe(pd.DataFrame(recs), width="stretch")
+                lead_tbl = {(r["country_of_origin"], r["mode"]): int(r["lead_days"]) for _, r in lead.iterrows()}
+                part_number_ov = {(r["sku_id"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
+                phase_cfg = {r["phase"]: r for _, r in phase_defaults.iterrows()} if not phase_defaults.empty else {}
+                recs = recommend_modes(
+                    part_number=str(d["sku_id"]),
+                    coo=coo,
+                    need_date=need_date,
+                    ordered_units=d["qty"],
+                    pack_rule=rule,
+                    equipment_by_mode=eq_by_mode,
+                    rates=rates.to_dict("records"),
+                    lead_table=lead_tbl,
+                    part_number_lead_override=part_number_ov,
+                    manual_lead_override=int(st.number_input("Manual lead override", min_value=0, value=int(d.get("manual_lead_override", 0) or 0), help="Optional extra lead days >=0. Example: 3")),
+                    phase=str(d.get("phase") or ""),
+                    phase_defaults=phase_cfg,
+                    rate_cards=rate_cards.to_dict("records") if not rate_cards.empty else [],
+                    rate_charges=rate_charges.to_dict("records") if not rate_charges.empty else [],
+                    service_scope=str(d.get("service_scope") or phase_cfg.get(str(d.get("phase") or ""), {}).get("default_service_scope") or "P2P"),
+                    mode_override=(str(d.get("mode_override")) if pd.notna(d.get("mode_override")) else None),
+                    miles=float(d.get("miles")) if pd.notna(d.get("miles")) else None,
+                )
+                st.dataframe(pd.DataFrame(recs), width="stretch")
+                if recs and recs[0].get("cost_items"):
+                    with st.expander("Selected recommendation cost detail", expanded=False):
+                        st.dataframe(pd.DataFrame(recs[0]["cost_items"]), width="stretch")
 
     with ship_tab:
         render_about("Shipment Builder", "Simulate greedy consolidation into equipment presets.\n\nPrerequisites: equipment presets exist.\n\nSteps: edit demo rows, run auto calculation, inspect shipment output.\n\nExample: two OCEAN rows combine when capacity allows.")
@@ -775,7 +820,7 @@ elif section == "Planner":
             st.dataframe(pd.DataFrame(shipments), width="stretch")
 
     with exp_tab:
-        render_about("Export", "Download CSV reports for shipment planning artifacts.\n\nPrerequisites: data loaded.\n\nSteps: click each button to download CSV output.\n\nExample: shipment_plan.csv for planning review.")
+        render_about("Export", "Download CSV reports for shipment planning artifacts, customs reporting, and phase rollups.")
         st.subheader("Export reports")
         demand = read_table("demand_lines")
         booking = read_table("rates")
@@ -787,6 +832,27 @@ elif section == "Planner":
         dl(demand, "shipment_plan.csv")
         dl(booking, "booking_summary.csv")
         dl(excess, "excess_report.csv")
+
+        if not demand.empty:
+            sku = read_table("sku_master")
+            customs_rates = read_table("customs_hts_rates")
+            rep_input = demand.merge(sku[["sku_id", "part_number", "default_coo", "plant_code"]], on="sku_id", how="left")
+            rep_input["unit_price"] = 1.0
+            rep_input["supplier_code"] = rep_input.get("supplier_code", "")
+            rep_input["port"] = ""
+            rep_input["importer"] = ""
+            rep_input["exporter"] = ""
+            rep_input["incoterms"] = ""
+            custom_rows = customs_report(rep_input.to_dict("records"), sku.to_dict("records"), customs_rates.to_dict("records") if not customs_rates.empty else [])
+            customs_df = pd.DataFrame(custom_rows)
+            dl(customs_df, "customs_report.csv")
+
+            phase_rows = [
+                {"phase": r.get("phase", ""), "mode": r.get("mode_override", ""), "estimated_cost": 0, "base_cost": 0, "domestic_legs_cost": 0, "weight_kg": float(r.get("qty", 0)), "volume_m3": 0, "arrival_date": r.get("need_date", "")}
+                for _, r in rep_input.iterrows()
+            ]
+            phase_df = pd.DataFrame(phase_cost_rollup(phase_rows, custom_rows))
+            dl(phase_df, "phase_summary.csv")
 
 
 elif section == "Docs":

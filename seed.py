@@ -24,8 +24,14 @@ def seed_if_empty() -> None:
                 ("20 Dry", "Ocean", 5.90, 2.35, 2.39, 28200, None, None),
                 ("40 Reefer", "Ocean", 11.58, 2.29, 2.26, 27500, None, "temp controlled"),
                 ("20 Reefer", "Ocean", 5.44, 2.29, 2.26, 21100, None, "temp controlled"),
+                ("20FR", "Ocean", 5.60, 2.35, 2.25, 31000, None, "flatrack"),
+                ("40FR", "Ocean", 11.65, 2.40, 1.95, 39000, None, "flatrack"),
                 ("Air", "Air", 1, 1, 1, 50000, 167.0, "volumetric factor kg/m3 configurable"),
             ],
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO phase_defaults(phase, default_mode, default_service_scope, manual_lead_override) VALUES (?,?,?,?)",
+            [("Trial1", "AIR", "P2D", None), ("Trial2", "AIR", "P2D", None), ("Sample", "OCEAN", "P2D", None), ("Speed-up", "OCEAN", "P2D", None), ("Validation", "OCEAN", "P2D", None), ("SOP", "OCEAN", "P2D", None)],
         )
         conn.executemany(
             "INSERT INTO lead_times(country_of_origin, mode, lead_days) VALUES (?, ?, ?)",
@@ -74,7 +80,7 @@ def ensure_templates() -> None:
     template_dir = Path("templates")
     template_dir.mkdir(exist_ok=True)
     (template_dir / "demand_template.csv").write_text(
-        "part_number,supplier_code,need_date,qty,coo_override,priority,notes\nMFG-88421,DEFAULT,2026-03-10,250,,High,launch\n"
+        "part_number,supplier_code,need_date,qty,coo_override,priority,phase,mode_override,service_scope,miles,notes\nMFG-88421,DEFAULT,2026-03-10,250,,High,Trial1,AIR,P2D,320,launch\n"
     )
     (template_dir / "bom_template.csv").write_text(
         "part_number,supplier_code,need_date,qty\nINT-100045,DEFAULT,2026-03-17,96\n"
