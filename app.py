@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sqlite3
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -9,6 +10,7 @@ import streamlit as st
 from db import compute_grid_diff, delete_rows, get_conn, run_migrations, upsert_rows
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes
+from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
 from seed import ensure_templates, seed_if_empty
 from validators import require_cols, validate_dates, validate_positive
 
@@ -21,6 +23,23 @@ ensure_templates()
 def read_table(name: str) -> pd.DataFrame:
     conn = get_conn()
     return pd.read_sql_query(f"SELECT * FROM {name}", conn)
+
+
+def validate_date_ranges(df: pd.DataFrame, start_col: str, end_col: str, label: str) -> list[str]:
+    if start_col not in df.columns or end_col not in df.columns:
+        return []
+    start = pd.to_datetime(df[start_col].replace("", pd.NA), errors="coerce")
+    end = pd.to_datetime(df[end_col].replace("", pd.NA), errors="coerce")
+    bad = start.notna() & end.notna() & (start > end)
+    return [f"{label}: {start_col} must be <= {end_col}"] if bad.any() else []
+
+
+def normalize_bools(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for col in cols:
+        if col in out.columns:
+            out[col] = out[col].fillna(0).astype(int)
+    return out
 
 
 def equipment_from_row(row: dict) -> Equipment:
@@ -59,6 +78,9 @@ if section == "Admin":
             "Pack rules",
             "Lead times",
             "Rates",
+            "Carriers",
+            "Rate cards",
+            "Rate Test",
             "Demand entry",
         ],
     )
@@ -144,6 +166,119 @@ if section == "Admin":
                     st.success("Rates saved")
                 else:
                     st.error(f"Could not save rates: {err}")
+
+    elif admin_screen == "Carriers":
+        source = read_table("carrier")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        if st.button("Save changes", key="save_carriers"):
+            edited = normalize_bools(edited, ["is_active"])
+            errors = require_cols(edited, ["code", "name"])
+            if errors:
+                st.error("; ".join(errors))
+            else:
+                ok, err = save_grid("carrier", source, edited, ["id"])
+                if ok:
+                    st.success("Carriers saved")
+                else:
+                    st.error(f"Could not save carriers: {err}")
+
+    elif admin_screen == "Rate cards":
+        cards_source = read_table("rate_card")
+        cards_edited = st.data_editor(cards_source, num_rows="dynamic", width="stretch")
+        st.divider()
+        st.subheader("Rate charges")
+        card_options = cards_edited["id"].dropna().astype(int).tolist() if not cards_edited.empty else []
+        charges_source = read_table("rate_charge")
+        selected_card_id = None
+        if card_options:
+            selected_card_id = st.selectbox("Select rate_card", card_options)
+            charge_view = charges_source[charges_source["rate_card_id"] == selected_card_id]
+        else:
+            st.info("Create and save at least one rate card before editing charges.")
+            charge_view = charges_source.iloc[0:0]
+        charges_edited = st.data_editor(charge_view, num_rows="dynamic", width="stretch")
+
+        if st.button("Save rate master", key="save_rate_master"):
+            cards_edited = normalize_bools(cards_edited, ["is_active"])
+            card_required = [
+                "mode", "service_scope", "equipment", "dim_class",
+                "origin_type", "origin_code", "dest_type", "dest_code",
+                "currency", "uom_pricing", "base_rate", "effective_from",
+            ]
+            errors = require_cols(cards_edited, card_required)
+            errors += validate_positive(cards_edited, ["base_rate", "priority"], allow_zero=True)
+            errors += validate_dates(cards_edited, ["effective_from", "effective_to", "contract_start", "contract_end"])
+            errors += validate_date_ranges(cards_edited, "effective_from", "effective_to", "Rate cards")
+            errors += validate_date_ranges(cards_edited, "contract_start", "contract_end", "Rate cards")
+
+            if not charges_edited.empty:
+                errors += require_cols(charges_edited, ["rate_card_id", "charge_code", "charge_name", "calc_method", "amount", "applies_when"])
+                errors += validate_positive(charges_edited, ["amount"], allow_zero=True)
+                errors += validate_dates(charges_edited, ["effective_from", "effective_to"])
+                errors += validate_date_ranges(charges_edited, "effective_from", "effective_to", "Rate charges")
+
+            if errors:
+                st.error("; ".join(sorted(set(errors))))
+            else:
+                ok_cards, err_cards = save_grid("rate_card", cards_source, cards_edited, ["id"])
+                ok_charges, err_charges = save_grid("rate_charge", charge_view, charges_edited, ["id"])
+                if ok_cards and ok_charges:
+                    st.success("Rate cards and charges saved")
+                    st.rerun()
+                else:
+                    st.error(f"Could not save rate master: {err_cards or err_charges}")
+
+    elif admin_screen == "Rate Test":
+        cards = read_table("rate_card")
+        carriers = read_table("carrier")
+        charges = read_table("rate_charge")
+        with st.form("rate_test_form"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                ship_date = st.date_input("Ship date", value=date.today())
+                mode = st.text_input("Mode", value="OCEAN")
+                equipment = st.text_input("Equipment", value="40DV")
+                service_scope = st.selectbox("Service scope", ["P2P", "P2D", "D2P", "D2D"])
+            with c2:
+                origin_type = st.text_input("Origin type", value="PORT")
+                origin_code = st.text_input("Origin code", value="USLAX")
+                dest_type = st.text_input("Dest type", value="PORT")
+                dest_code = st.text_input("Dest code", value="CNSHA")
+            with c3:
+                carrier_id = st.selectbox("Carrier", [None] + carriers.get("id", pd.Series(dtype=int)).dropna().astype(int).tolist())
+                weight_kg = st.number_input("Weight kg", min_value=0.0, value=1000.0)
+                volume_m3 = st.number_input("Volume m3", min_value=0.0, value=10.0)
+                containers_count = st.number_input("Containers count", min_value=0.0, value=1.0)
+
+            f1, f2 = st.columns(2)
+            with f1:
+                reefer = st.checkbox("Reefer")
+                flatrack = st.checkbox("Flatrack")
+                dg = st.checkbox("DG")
+            with f2:
+                oh = st.checkbox("Over Height")
+                ow = st.checkbox("Over Width")
+                ohw = st.checkbox("Over Height + Width")
+                miles = st.number_input("Miles", min_value=0.0, value=0.0)
+            submit = st.form_submit_button("Run rate test")
+
+        if submit:
+            shipment = RateTestInput(
+                ship_date=ship_date, mode=mode, equipment=equipment, service_scope=service_scope,
+                origin_type=origin_type, origin_code=origin_code, dest_type=dest_type, dest_code=dest_code,
+                carrier_id=carrier_id, reefer=reefer, flatrack=flatrack, over_height=oh,
+                over_width=ow, over_height_width=ohw, dg=dg, weight_kg=weight_kg,
+                volume_m3=volume_m3, miles=miles or None, containers_count=containers_count or None,
+            )
+            card = select_best_rate_card(cards.to_dict("records"), shipment)
+            if not card:
+                st.warning("No matching active/date-valid rate_card found.")
+            else:
+                st.write("Picked rate card")
+                st.json({k: card[k] for k in ["id", "carrier_id", "mode", "equipment", "service_scope", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "priority"] if k in card})
+                result = compute_rate_total(card, charges.to_dict("records"), shipment)
+                st.dataframe(pd.DataFrame(result["items"]), width="stretch")
+                st.success(f"Grand total: {result['grand_total']} {result['currency']}")
 
     elif admin_screen == "Demand entry":
         source = read_table("demand_lines")
