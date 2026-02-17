@@ -475,3 +475,76 @@ def test_migration_v10_adds_customs_notes_and_reference_columns(tmp_path):
     assert "tariff_rate_notes" in cols
     assert "documentation_url" in cols
     assert "tips" in cols
+
+
+def test_migration_v11_adds_supplier_sku_and_customs_reference_fields(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    conn = sqlite3.connect(db.DB_PATH)
+    with conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        for version in range(1, 11):
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+
+        conn.execute(
+            """
+            CREATE TABLE suppliers (
+                supplier_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_code TEXT NOT NULL UNIQUE,
+                supplier_name TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE sku_master (
+                sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                part_number TEXT NOT NULL,
+                supplier_id INTEGER NOT NULL,
+                description TEXT,
+                default_coo TEXT NOT NULL,
+                UNIQUE(part_number, supplier_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE customs_hts_rates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku_id INTEGER,
+                hts_code TEXT NOT NULL,
+                material_input TEXT,
+                country_of_origin TEXT,
+                tariff_program TEXT,
+                base_duty_rate REAL NOT NULL DEFAULT 0,
+                tariff_rate REAL NOT NULL DEFAULT 0,
+                section_232 INTEGER NOT NULL DEFAULT 0,
+                section_301 INTEGER NOT NULL DEFAULT 0,
+                domestic_trucking_required INTEGER NOT NULL DEFAULT 0,
+                port_to_ramp_required INTEGER NOT NULL DEFAULT 0,
+                special_documentation_required INTEGER NOT NULL DEFAULT 0,
+                documentation_notes TEXT,
+                effective_from TEXT NOT NULL,
+                effective_to TEXT,
+                notes TEXT
+            )
+            """
+        )
+
+    db.run_migrations()
+    migrated = db.get_conn()
+
+    supplier_cols = [r[1] for r in migrated.execute("PRAGMA table_info(suppliers)").fetchall()]
+    sku_cols = [r[1] for r in migrated.execute("PRAGMA table_info(sku_master)").fetchall()]
+    customs_cols = [r[1] for r in migrated.execute("PRAGMA table_info(customs_hts_rates)").fetchall()]
+
+    assert "incoterms_ref" in supplier_cols
+    assert "plant_code" in sku_cols
+    assert "supplier_duns" in sku_cols
+    assert "ship_from_country" in customs_cols

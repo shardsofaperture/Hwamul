@@ -51,9 +51,11 @@ def read_sku_catalog() -> pd.DataFrame:
             sm.supplier_id,
             s.supplier_code,
             s.supplier_name,
+            sm.plant_code,
+            sm.supplier_duns,
             sm.description,
             sm.default_coo,
-            sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
+            sm.part_number || ' [' || s.supplier_code || ' @ ' || sm.plant_code || ']' AS sku_label
         FROM sku_master sm
         JOIN suppliers s ON s.supplier_id = sm.supplier_id
         ORDER BY sm.part_number, s.supplier_code
@@ -174,9 +176,9 @@ Example: mode OCEAN, name 40DV, max_payload_kg 26700.""",
 
 Prerequisites: none.
 
-Steps: 1) Enter supplier_code and supplier_name. 2) Save.
+Steps: 1) Enter supplier_code and supplier_name. 2) Capture Incoterms reference text when available. 3) Save.
 
-Example: supplier_code MAEU, supplier_name Maersk Line.""",
+Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGHAI.""",
         )
         source = read_table("suppliers")
         render_field_guide("suppliers")
@@ -196,7 +198,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line.""",
         source = read_sku_catalog()
         q = st.text_input("Search SKU or description", help="Filter rows by part number, supplier code/name, or description. Example: PN_10001")
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
-        render_about("SKUs", "Define supplier-specific SKU records.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number/default_coo. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + COO CN.")
+        render_about("SKUs", "Define supplier-and-plant specific SKU records.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number, plant_code, COO, and optional DUNS. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + plant_code US_TX_DAL + COO CN + supplier_duns 123456789.")
         render_field_guide("skus")
         edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch", column_config=table_column_config("skus"))
         if st.button("Save changes", key="save_sku"):
@@ -457,7 +459,7 @@ Example: CN + OCEAN = 35 days.""")
     elif admin_screen == "Customs / HTS":
         render_about(
             "Customs / HTS",
-            "Track HTS and tariff rates for customs reporting over time, including required documentation and section flags.\n\n"
+            "Track HTS and tariff rates for customs reporting over time, including required documentation and section flags. Capture both COO and ship-from country, where ship-from is used for rate reference.\n\n"
             "Prerequisites: optional SKU linkage when a material maps to a supplier-specific SKU.\n\n"
             "Steps: 1) Add HTS rows by effective dates. 2) Capture section 232/301 flags and documentation requirements. 3) Save.",
         )

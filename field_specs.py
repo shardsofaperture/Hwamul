@@ -29,10 +29,13 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
     "suppliers": {
         "supplier_code": FieldSpec("text", required=True, max_length=32, regex=r"^[A-Z0-9_-]{2,32}$", allowed_chars="A-Z, 0-9, _, -", description="Unique supplier code", example="MAEU"),
         "supplier_name": FieldSpec("text", required=True, max_length=120, description="Supplier display name", example="Maersk Line"),
+        "incoterms_ref": FieldSpec("text", max_length=200, description="Supplier Incoterms reference", example="FOB SHANGHAI; EXW SHENZHEN"),
     },
     "skus": {
         "part_number": FieldSpec("text", required=True, max_length=64, regex=r"^[A-Z0-9_.-]{2,64}$", allowed_chars="A-Z, 0-9, ., _, -", description="Part number", example="PN_10001"),
+        "plant_code": FieldSpec("text", required=True, max_length=40, regex=r"^[A-Z0-9_.-]{2,40}$", allowed_chars="A-Z, 0-9, ., _, -", description="Plant code owning this SKU", example="US_TX_DAL"),
         "supplier_id": FieldSpec("int", required=True, min_value=1, description="Supplier foreign key", example="1"),
+        "supplier_duns": FieldSpec("text", max_length=13, regex=r"^[0-9-]{9,13}$", allowed_chars="0-9 and -", description="Supplier DUNS number", example="123456789"),
         "description": FieldSpec("text", max_length=200, description="SKU description", example="40DV container"),
         "default_coo": FieldSpec("text", required=True, max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Default country of origin ISO-2", example="CN"),
     },
@@ -89,7 +92,8 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "sku_id": FieldSpec("int", min_value=1, description="Optional SKU identifier", example="10"),
         "material_input": FieldSpec("text", max_length=120, description="Material input description", example="Hot rolled steel coil"),
         "hts_code": FieldSpec("text", required=True, max_length=20, regex=r"^[0-9.]{4,20}$", allowed_chars="0-9, .", description="HTS code", example="7208.39.0015"),
-        "country_of_origin": FieldSpec("text", max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Country of origin", example="CN"),
+        "country_of_origin": FieldSpec("text", max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Country of origin (COO)", example="CN"),
+        "ship_from_country": FieldSpec("text", max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Ship-from country used for rate reference", example="MX"),
         "tariff_program": FieldSpec("text", max_length=40, description="Tariff program or note", example="MFN"),
         "base_duty_rate": FieldSpec("decimal", required=True, min_value=0, description="Base duty %", example="2.5"),
         "tariff_rate": FieldSpec("decimal", required=True, min_value=0, description="Additional tariff %", example="25"),
