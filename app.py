@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 
 import pandas as pd
 import streamlit as st
@@ -33,12 +34,16 @@ def equipment_from_row(row: dict) -> Equipment:
         volumetric_factor=float(row["volumetric_factor"]) if pd.notna(row.get("volumetric_factor")) else None,
     )
 
-def save_grid(table: str, original: pd.DataFrame, edited: pd.DataFrame, key_cols: list[str]) -> None:
+def save_grid(table: str, original: pd.DataFrame, edited: pd.DataFrame, key_cols: list[str]) -> tuple[bool, str | None]:
     inserts, updates, deletes = compute_grid_diff(original, edited, key_cols)
     conn = get_conn()
-    with conn:
-        upsert_rows(conn, table, pd.concat([inserts, updates], ignore_index=True), key_cols)
-        delete_rows(conn, table, deletes, key_cols)
+    try:
+        with conn:
+            upsert_rows(conn, table, pd.concat([inserts, updates], ignore_index=True), key_cols)
+            delete_rows(conn, table, deletes, key_cols)
+    except sqlite3.IntegrityError as exc:
+        return False, str(exc)
+    return True, None
 
 
 st.title("Local Logistics Planning App")
@@ -66,8 +71,11 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("equipment_presets", source, edited, ["id"])
-                st.success("Equipment presets saved")
+                ok, err = save_grid("equipment_presets", source, edited, ["id"])
+                if ok:
+                    st.success("Equipment presets saved")
+                else:
+                    st.error(f"Could not save equipment presets: {err}")
 
     elif admin_screen == "SKUs":
         source = read_table("sku_master")
@@ -81,9 +89,12 @@ if section == "Admin":
             else:
                 # When search is active, only persist edits for the visible slice.
                 # Diffing against the full table would treat hidden rows as deletions.
-                save_grid("sku_master", filtered_source, edited, ["sku"])
-                st.success("SKUs saved")
-                st.rerun()
+                ok, err = save_grid("sku_master", filtered_source, edited, ["sku"])
+                if ok:
+                    st.success("SKUs saved")
+                    st.rerun()
+                else:
+                    st.error(f"Could not save SKUs: {err}. If changing existing SKU codes, update dependent pack and demand rows first.")
 
     elif admin_screen == "Pack rules":
         source = read_table("packaging_rules")
@@ -96,8 +107,11 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("packaging_rules", source, edited, ["id"])
-                st.success("Pack rules saved")
+                ok, err = save_grid("packaging_rules", source, edited, ["id"])
+                if ok:
+                    st.success("Pack rules saved")
+                else:
+                    st.error(f"Could not save pack rules: {err}")
 
     elif admin_screen == "Lead times":
         lt_source = read_table("lead_times")
@@ -109,9 +123,12 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("lead_times", lt_source, lt_edited, ["id"])
-                save_grid("lead_time_overrides", ov_source, ov_edited, ["id"])
-                st.success("Lead times and overrides saved")
+                ok_lt, err_lt = save_grid("lead_times", lt_source, lt_edited, ["id"])
+                ok_ov, err_ov = save_grid("lead_time_overrides", ov_source, ov_edited, ["id"])
+                if ok_lt and ok_ov:
+                    st.success("Lead times and overrides saved")
+                else:
+                    st.error(f"Could not save lead times/overrides: {err_lt or err_ov}")
 
     elif admin_screen == "Rates":
         source = read_table("rates")
@@ -122,8 +139,11 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("rates", source, edited, ["id"])
-                st.success("Rates saved")
+                ok, err = save_grid("rates", source, edited, ["id"])
+                if ok:
+                    st.success("Rates saved")
+                else:
+                    st.error(f"Could not save rates: {err}")
 
     elif admin_screen == "Demand entry":
         source = read_table("demand_lines")
@@ -153,8 +173,11 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("demand_lines", source, edited, ["id"])
-                st.success("Demand lines saved")
+                ok, err = save_grid("demand_lines", source, edited, ["id"])
+                if ok:
+                    st.success("Demand lines saved")
+                else:
+                    st.error(f"Could not save demand lines: {err}")
 
 else:
     alloc_tab, rec_tab, ship_tab, exp_tab = st.tabs(["Allocation", "Recommendations", "Shipment Builder", "Export"])
