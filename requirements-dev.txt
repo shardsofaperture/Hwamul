@@ -1,0 +1,11 @@
+streamlit
+pydantic
+sqlalchemy
+alembic
+pandas
+python-dateutil
+pytest
+pytest-cov
+ruff
+black
+mypy
