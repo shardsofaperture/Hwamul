@@ -92,8 +92,14 @@ def equipment_from_row(row: dict) -> Equipment:
     )
 
 def save_grid(table: str, original: pd.DataFrame, edited: pd.DataFrame, key_cols: list[str]) -> tuple[bool, str | None]:
-    inserts, updates, deletes = compute_grid_diff(original, edited, key_cols)
     conn = get_conn()
+    table_cols = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    original_db = original[[c for c in original.columns if c in table_cols]].copy()
+    edited_db = edited[[c for c in edited.columns if c in table_cols]].copy()
+    inserts, updates, deletes = compute_grid_diff(original_db, edited_db, key_cols)
     try:
         with conn:
             upsert_rows(conn, table, pd.concat([inserts, updates], ignore_index=True), key_cols)
@@ -202,7 +208,13 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
         render_about("SKUs", "Define supplier-and-plant specific SKU records.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number, plant_code, COO, and optional DUNS. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + plant_code US_TX_DAL + COO CN + supplier_duns 123456789.")
         render_field_guide("skus")
-        edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch", column_config=table_column_config("skus"))
+        edited = st.data_editor(
+            filtered_source,
+            num_rows="dynamic",
+            width="stretch",
+            column_config=table_column_config("skus"),
+            disabled=["supplier_code", "supplier_name", "sku_label"],
+        )
         if st.button("Save changes", key="save_sku"):
             errors = validate_with_specs("skus", edited)
             if errors:
