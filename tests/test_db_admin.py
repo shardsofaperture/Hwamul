@@ -373,3 +373,58 @@ def test_pack_rounding_uses_default_or_override_pack_rule(tmp_path):
 
     assert default_packs == 6
     assert override_packs == 3
+
+
+def test_customs_hts_migration_and_export_profiles(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    conn = db.get_conn()
+    with conn:
+        conn.execute("INSERT OR IGNORE INTO suppliers(supplier_code, supplier_name) VALUES ('SHTS', 'HTS Supplier')")
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='SHTS'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('HTS-1', ?, 'HTS Part', 'CN')",
+            (supplier_id,),
+        )
+        sku_id = conn.execute(
+            "SELECT sku_id FROM sku_master WHERE part_number='HTS-1' AND supplier_id=?",
+            (supplier_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO customs_hts_rates(
+                sku_id, hts_code, material_input, country_of_origin, tariff_program,
+                base_duty_rate, tariff_rate, section_232, section_301,
+                domestic_trucking_required, port_to_ramp_required,
+                special_documentation_required, documentation_notes,
+                effective_from, effective_to, notes
+            ) VALUES (?, '7208.39.0015', 'Hot rolled steel coil', 'CN', 'MFN',
+                      2.5, 25, 1, 0, 1, 1, 1, 'Mill cert required',
+                      '2024-01-01', '2099-12-31', 'active row')
+            """,
+            (sku_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO customs_hts_rates(
+                sku_id, hts_code, material_input, country_of_origin, tariff_program,
+                base_duty_rate, tariff_rate, section_232, section_301,
+                domestic_trucking_required, port_to_ramp_required,
+                special_documentation_required, documentation_notes,
+                effective_from, effective_to, notes
+            ) VALUES (?, '7208.39.0015', 'Hot rolled steel coil', 'CN', 'MFN',
+                      2.5, 10, 1, 0, 0, 0, 0, 'legacy',
+                      '2020-01-01', '2020-12-31', 'expired row')
+            """,
+            (sku_id,),
+        )
+
+    recent = export_data_bundle("recent")
+    history = export_data_bundle("history")
+
+    assert b'"customs_hts_rates"' in recent
+    assert b'"active row"' in recent
+    assert b'"expired row"' not in recent
+
+    assert b'"customs_hts_rates"' in history
+    assert b'"expired row"' in history

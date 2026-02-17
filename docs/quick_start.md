@@ -5,7 +5,8 @@
 3. Open **Admin → Pack rules** and create at least one default rule per SKU.
 4. Open **Admin → Lead times** and define COO/mode lead days (and optional SKU overrides).
 5. Open **Admin → Rate cards** and add base rate cards + rate charges.
-6. Open **Admin → Demand entry** and add demand lines.
-7. Open **Planner** tabs for allocation, recommendations, shipment builder, and exports.
+6. Open **Admin → Customs / HTS** and maintain HTS/tariff records, section flags, and documentation requirements.
+7. Open **Admin → Demand entry** and add demand lines.
+8. Open **Planner** tabs for allocation, recommendations, shipment builder, and exports.
 
 Everything can be configured in the UI; external docs are optional.

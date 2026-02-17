@@ -12,3 +12,4 @@ Recommended workflow:
 2. Create rate cards by lane/scope/equipment/date.
 3. Add charges per card.
 4. Validate in **Rate Test**.
+5. Maintain customs reporting data in **Customs / HTS** for HTS and tariff tracking alongside freight rates.

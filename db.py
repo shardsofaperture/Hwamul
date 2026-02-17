@@ -671,6 +671,40 @@ def _migration_8_supplier_specific_pack_rules(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((8, _migration_8_supplier_specific_pack_rules))
 
 
+def _migration_9_customs_tracking(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS customs_hts_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_id INTEGER,
+            hts_code TEXT NOT NULL,
+            material_input TEXT,
+            country_of_origin TEXT,
+            tariff_program TEXT,
+            base_duty_rate REAL NOT NULL DEFAULT 0,
+            tariff_rate REAL NOT NULL DEFAULT 0,
+            section_232 INTEGER NOT NULL DEFAULT 0,
+            section_301 INTEGER NOT NULL DEFAULT 0,
+            domestic_trucking_required INTEGER NOT NULL DEFAULT 0,
+            port_to_ramp_required INTEGER NOT NULL DEFAULT 0,
+            special_documentation_required INTEGER NOT NULL DEFAULT 0,
+            documentation_notes TEXT,
+            effective_from TEXT NOT NULL,
+            effective_to TEXT,
+            notes TEXT,
+            UNIQUE(hts_code, country_of_origin, tariff_program, effective_from),
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_customs_hts_lookup
+            ON customs_hts_rates(hts_code, country_of_origin, effective_from, effective_to);
+        """
+    )
+
+
+MIGRATIONS.append((9, _migration_9_customs_tracking))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -779,6 +813,7 @@ EXPORT_TABLE_ORDER = [
     "carrier",
     "rate_card",
     "rate_charge",
+    "customs_hts_rates",
     "demand_lines",
     "tranche_allocations",
 ]
@@ -794,6 +829,7 @@ TABLE_KEY_COLS: dict[str, list[str]] = {
     "carrier": ["code"],
     "rate_card": ["mode", "service_scope", "equipment", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "effective_to", "carrier_id"],
     "rate_charge": ["rate_card_id", "charge_code", "charge_name", "calc_method", "effective_from", "effective_to"],
+    "customs_hts_rates": ["hts_code", "country_of_origin", "tariff_program", "effective_from"],
     "demand_lines": ["sku_id", "need_date", "qty", "notes"],
     "tranche_allocations": ["demand_line_id", "tranche_name", "allocation_type"],
 }
@@ -816,6 +852,11 @@ def _query_map_for_profile(profile: str) -> dict[str, str]:
                 "WHERE (effective_start IS NULL OR effective_start = '' OR effective_start <= :today) "
                 "AND (effective_end IS NULL OR effective_end = '' OR effective_end >= :today)"
             ),
+            "customs_hts_rates": (
+                "SELECT * FROM customs_hts_rates "
+                "WHERE effective_from <= :today "
+                "AND (effective_to IS NULL OR effective_to = '' OR effective_to >= :today)"
+            ),
         }
     if profile == "history":
         return {
@@ -824,6 +865,10 @@ def _query_map_for_profile(profile: str) -> dict[str, str]:
             "rates": (
                 "SELECT * FROM rates "
                 "WHERE effective_end IS NOT NULL AND effective_end <> '' AND effective_end < :today"
+            ),
+            "customs_hts_rates": (
+                "SELECT * FROM customs_hts_rates "
+                "WHERE effective_to IS NOT NULL AND effective_to <> '' AND effective_to < :today"
             ),
         }
     raise ValueError(f"Unknown export profile: {profile}")
