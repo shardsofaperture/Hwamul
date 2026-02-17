@@ -1006,6 +1006,20 @@ def _migration_15_canonical_equipment_codes(conn: sqlite3.Connection) -> None:
                 continue
             tcols = {c[1] for c in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
             if "equipment_id" in tcols:
+                if table_name == "sku_equipment_rules":
+                    conn.execute(
+                        """
+                        DELETE FROM sku_equipment_rules
+                        WHERE equipment_id = ?
+                          AND EXISTS (
+                              SELECT 1
+                              FROM sku_equipment_rules keep
+                              WHERE keep.sku_id = sku_equipment_rules.sku_id
+                                AND keep.equipment_id = ?
+                          )
+                        """,
+                        (old_id, new_id),
+                    )
                 conn.execute(f"UPDATE {table_name} SET equipment_id = ? WHERE equipment_id = ?", (new_id, old_id))
 
         conn.execute(
