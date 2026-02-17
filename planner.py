@@ -15,44 +15,76 @@ from models import (
 )
 
 
+def norm_mode(mode: str | None) -> str:
+    return (mode or "").strip().upper()
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class TrancheResult:
+    sku_id: int
     part_number: str
     need_date: date
     tranche_name: str
     requested_units: float
-    ordered_units: float
+    shipped_units: float
     excess_units: float
     packs: int
 
 
 
-def allocate_tranches(demand_qty: float, rule: PackagingRule, tranches: list[tuple[str, str, float]]) -> list[TrancheResult]:
+def allocate_tranches(
+    demand_qty: float,
+    rule: PackagingRule,
+    tranches: list[tuple[str, str, float]],
+    *,
+    need_date: date | None = None,
+    sku_id: int = 0,
+) -> list[TrancheResult]:
     """Allocate demand into tranches and carry excess to later tranches.
 
     Tranches format: (name, type, value), where type is 'percent' or 'absolute'.
     """
-    remaining = demand_qty
+    demand_qty = max(0.0, safe_float(demand_qty))
+    tranche_targets: list[tuple[str, float]] = []
+    for name, alloc_type, value in tranches:
+        alloc = (alloc_type or "").strip().lower()
+        if alloc == "percent":
+            target = demand_qty * safe_float(value) / 100.0
+        else:
+            target = max(0.0, safe_float(value))
+        tranche_targets.append((name, target))
+
     carry_excess = 0.0
     rows: list[TrancheResult] = []
-    for name, alloc_type, value in tranches:
-        if alloc_type == "percent":
-            requested = max(0.0, remaining * value / 100)
-        else:
-            requested = min(remaining, max(0.0, value))
-        requested = max(0.0, requested - carry_excess)
+    row_need_date = need_date or date.today()
+    for name, target in tranche_targets:
+        requested = max(0.0, target - carry_excess)
         packs = rounded_order_packs(requested, rule)
-        ordered_units = packs * rule.units_per_pack
-        excess = max(0.0, ordered_units - requested)
+        shipped_units = packs * rule.units_per_pack
+        excess = max(0.0, shipped_units - requested)
         carry_excess = excess
-        remaining = max(0.0, remaining - requested)
         rows.append(
             TrancheResult(
+                sku_id=sku_id,
                 part_number=rule.part_number,
-                need_date=date.today(),
+                need_date=row_need_date,
                 tranche_name=name,
                 requested_units=requested,
-                ordered_units=ordered_units,
+                shipped_units=shipped_units,
                 excess_units=excess,
                 packs=packs,
             )
@@ -60,24 +92,27 @@ def allocate_tranches(demand_qty: float, rule: PackagingRule, tranches: list[tup
     return rows
 
 
-def lead_days_for(mode: str, coo: str, part_number: str, lead_table: dict[tuple[str, str], int], part_number_override: dict[tuple[str, str], int], manual_override: int | None = None) -> int:
+def lead_days_for(mode: str, coo: str, sku_id: int, lead_table: dict[tuple[str, str], int], sku_override: dict[tuple[int, str], int], manual_override: int | None = None) -> int:
+    mode_key = norm_mode(mode)
+    coo_key = (coo or "").strip().upper()
     if manual_override is not None:
         return manual_override
-    if (part_number, mode) in part_number_override:
-        return part_number_override[(part_number, mode)]
-    return lead_table.get((coo, mode), 999)
+    if (sku_id, mode_key) in sku_override:
+        return sku_override[(sku_id, mode_key)]
+    return lead_table.get((coo_key, mode_key), 999)
 
 
 def recommend_modes(
+    sku_id: int,
     part_number: str,
     coo: str,
     need_date: date,
-    ordered_units: float,
+    requested_units: float,
     pack_rule: PackagingRule,
     equipment_by_mode: dict[str, list[Equipment]],
     rates: list[dict],
     lead_table: dict[tuple[str, str], int],
-    part_number_lead_override: dict[tuple[str, str], int],
+    sku_lead_override: dict[tuple[int, str], int],
     manual_lead_override: int | None = None,
     *,
     phase: str = "",
@@ -89,8 +124,12 @@ def recommend_modes(
     route_info: dict | None = None,
     miles: float | None = None,
 ):
-    total_weight = (ordered_units / pack_rule.units_per_pack) * pack_rule.gross_pack_weight_kg
-    total_volume = (ordered_units / pack_rule.units_per_pack) * pack_rule.pack_cube_m3
+    requested_units = max(0.0, safe_float(requested_units))
+    shipped_packs = rounded_order_packs(requested_units, pack_rule)
+    shipped_units = shipped_packs * pack_rule.units_per_pack
+    excess_units = max(0.0, shipped_units - requested_units)
+    total_weight = (shipped_units / pack_rule.units_per_pack) * pack_rule.gross_pack_weight_kg
+    total_volume = (shipped_units / pack_rule.units_per_pack) * pack_rule.pack_cube_m3
 
     recs = []
     phase_defaults = phase_defaults or {}
@@ -98,10 +137,15 @@ def recommend_modes(
     if phase_cfg.get("service_scope"):
         service_scope = phase_cfg["service_scope"]
 
+    normalized_eq: dict[str, list[Equipment]] = {}
+    for mode, items in equipment_by_mode.items():
+        normalized_eq.setdefault(norm_mode(mode), []).extend(items)
+    equipment_by_mode = normalized_eq
     if mode_override:
-        equipment_by_mode = {k: v for k, v in equipment_by_mode.items() if k.upper() == mode_override.upper()}
+        equipment_by_mode = {k: v for k, v in equipment_by_mode.items() if k == norm_mode(mode_override)}
 
     route = route_info or {}
+    has_route = bool(route.get("origin_port") or route.get("dest_port") or route.get("supplier_city") or route.get("supplier_code") or route.get("plant_code") or route.get("plant"))
     origin_port = route.get("origin_port", "")
     dest_port = route.get("dest_port", "")
     supplier_loc = route.get("supplier_city", route.get("supplier_code", ""))
@@ -150,17 +194,18 @@ def recommend_modes(
         result = compute_rate_total(card, rate_charges or [], shipment)
         return card, result
     for mode, equipments in equipment_by_mode.items():
-        lead_days = lead_days_for(mode, coo, part_number, lead_table, part_number_lead_override, manual_lead_override)
+        mode = norm_mode(mode)
+        lead_days = lead_days_for(mode, coo, sku_id, lead_table, sku_lead_override, manual_lead_override)
         ship_by = need_date - timedelta(days=lead_days)
         feasible = lead_days < 900
         cost = 0.0
         eq_count = 0
         util = 0.0
 
-        if mode == "Air":
+        if mode == "AIR":
             eq = equipments[0]
             chargeable = chargeable_air_weight_kg(total_weight, total_volume, eq.volumetric_factor or 167)
-            rate = next((r for r in rates if r["mode"] == "Air" and r["pricing_model"] == "per_kg"), None)
+            rate = next((r for r in rates if norm_mode(r.get("mode")) == "AIR" and str(r.get("pricing_model", "")).lower() == "per_kg"), None)
             if rate:
                 cost = max(rate["minimum_charge"] or 0, chargeable * rate["rate_value"]) + (rate["fixed_fee"] or 0)
             eq_count = 1
@@ -168,7 +213,10 @@ def recommend_modes(
         else:
             eq = equipments[0]
             eq_count = estimate_equipment_count(total_volume, total_weight, eq)
-            rate = next((r for r in rates if r["mode"] == mode and r["equipment_name"] == eq.name and r["pricing_model"] in {"per_container", "per_load"}), None)
+            rate = next((
+                r for r in rates
+                if norm_mode(r.get("mode")) == mode and r.get("equipment_name") == eq.name and str(r.get("pricing_model", "")).lower() in {"per_container", "per_load"}
+            ), None)
             if rate:
                 cost = eq_count * rate["rate_value"] + (rate["fixed_fee"] or 0) + (rate["surcharge"] or 0)
             util = min(1.0, max(total_volume / (eq_count * eq.volume_m3), total_weight / (eq_count * eq.max_payload_kg))) if eq_count else 0
@@ -177,7 +225,7 @@ def recommend_modes(
         card_id = None
         main_cost = cost
         domestic_cost = 0.0
-        if rate_cards:
+        if rate_cards and has_route:
             flags = _flags(eq.name)
             main_leg = _leg(
                 mode,
@@ -187,9 +235,9 @@ def recommend_modes(
                 origin_port if service_scope.startswith("P") else supplier_loc,
                 "PORT" if service_scope.endswith("P") else "CITY",
                 dest_port if service_scope.endswith("P") else plant_loc,
-                miles if mode.upper() == "TRUCK" else None,
+                miles if mode == "TRUCK" else None,
                 float(eq_count or 1),
-                chargeable_air_weight_kg(total_weight, total_volume, eq.volumetric_factor or 167) if mode == "Air" else total_weight,
+                chargeable_air_weight_kg(total_weight, total_volume, eq.volumetric_factor or 167) if mode == "AIR" else total_weight,
                 flags,
             )
             if main_leg:
@@ -216,14 +264,23 @@ def recommend_modes(
                 "lead_days": lead_days,
                 "ship_by": ship_by.isoformat(),
                 "feasible": feasible,
+                "meets_date": feasible,
+                "ship_by_date": ship_by.isoformat(),
+                "requested_units": requested_units,
+                "shipped_units": shipped_units,
+                "excess_units": excess_units,
                 "estimated_cost": round(main_cost + domestic_cost, 2),
+                "cost_total": round(main_cost + domestic_cost, 2),
                 "base_cost": round(main_cost, 2),
                 "domestic_legs_cost": round(domestic_cost, 2),
                 "equipment_count": eq_count,
+                "required_units_count": eq_count,
                 "selected_rate_card_id": card_id,
                 "service_scope": service_scope,
                 "cost_items": details,
                 "utilization_pct": round(util * 100, 1),
+                "cube_utilization": round(min(1.0, (total_volume / (eq_count * eq.volume_m3)) if eq_count and eq.volume_m3 else 0.0), 4),
+                "weight_utilization": round(min(1.0, (total_weight / (eq_count * eq.max_payload_kg)) if eq_count and eq.max_payload_kg else 0.0), 4),
             }
         )
 
@@ -233,12 +290,13 @@ def recommend_modes(
 
 def build_shipments(tranches: list[dict], equipment_map: dict[str, Equipment]):
     grouped = defaultdict(list)
+    normalized_eq = {norm_mode(k): v for k, v in equipment_map.items()}
     for row in tranches:
-        grouped[row["mode"]].append(row)
+        grouped[norm_mode(row["mode"])].append(row)
 
     outputs = []
     for mode, rows in grouped.items():
-        eq = equipment_map[mode]
+        eq = normalized_eq[mode]
         total_volume = sum(r["volume_m3"] for r in rows)
         total_weight = sum(r["weight_kg"] for r in rows)
         count = estimate_equipment_count(total_volume, total_weight, eq)
