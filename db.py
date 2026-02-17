@@ -705,6 +705,25 @@ def _migration_9_customs_tracking(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((9, _migration_9_customs_tracking))
 
 
+def _migration_10_customs_notes_and_references(conn: sqlite3.Connection) -> None:
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='customs_hts_rates'"
+    ).fetchone()
+    if not table_exists:
+        return
+
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(customs_hts_rates)").fetchall()}
+    if "tariff_rate_notes" not in cols:
+        conn.execute("ALTER TABLE customs_hts_rates ADD COLUMN tariff_rate_notes TEXT")
+    if "documentation_url" not in cols:
+        conn.execute("ALTER TABLE customs_hts_rates ADD COLUMN documentation_url TEXT")
+    if "tips" not in cols:
+        conn.execute("ALTER TABLE customs_hts_rates ADD COLUMN tips TEXT")
+
+
+MIGRATIONS.append((10, _migration_10_customs_notes_and_references))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
