@@ -1,0 +1,17 @@
+part_number,supplier_code,description,default_coo,unit_value_usd,uom
+PN-1001,SUPA,Motor Housing,CN,12.5,EA
+PN-1001,SUPB,Motor Housing,CN,12.7,EA
+PN-1002,SUPA,Seal Kit,CN,4.1,EA
+PN-1002,SUPB,Seal Kit,CN,4.0,EA
+PN-1003,SUPA,Rotor,CN,9.8,EA
+PN-1003,SUPB,Rotor,CN,9.9,EA
+PN-1004,SUPA,Bearing,CN,5.2,EA
+PN-1004,SUPB,Bearing,CN,5.1,EA
+PN-1005,SUPA,Shaft,CN,6.7,EA
+PN-1005,SUPB,Shaft,CN,6.9,EA
+PN-1006,SUPA,Impeller,CN,8.5,EA
+PN-1006,SUPB,Impeller,CN,8.6,EA
+PN-1007,SUPA,Bracket,CN,3.9,EA
+PN-1007,SUPB,Bracket,CN,4.0,EA
+PN-1008,SUPA,Valve,CN,11.2,EA
+PN-1008,SUPB,Valve,CN,11.0,EA

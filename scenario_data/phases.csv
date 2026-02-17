@@ -1,0 +1,8 @@
+phase,need_date,default_mode,service_scope
+trial1,2026-01-10,AIR,P2P
+trial2,2026-01-20,AIR,P2D
+sample1,2026-02-05,OCEAN,P2P
+sample2,2026-02-20,OCEAN,P2D
+speedup,2026-03-10,OCEAN,D2P
+validation,2026-03-25,OCEAN,D2D
+SOP,2026-04-15,OCEAN,P2D

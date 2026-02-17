@@ -1,0 +1,8 @@
+phase,origin_country,origin_port,dest_country,dest_port,plant,domestic_scope
+trial1,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+trial2,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+sample1,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+sample2,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+speedup,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+validation,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P
+SOP,CN,CNSHA,US,USLAX,US_CA_PLANT,D2P

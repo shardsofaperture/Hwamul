@@ -1,0 +1,9 @@
+rate_card_id,charge_code,charge_name,calc_method,amount,applies_when
+1,SEC,Security,FLAT,80,ALWAYS
+2,SEC,Security,FLAT,80,ALWAYS
+3,BAF,Bunker,PER_CONTAINER,120,ALWAYS
+4,BAF,Bunker,PER_CONTAINER,140,ALWAYS
+5,BAF,Bunker,PER_CONTAINER,100,ALWAYS
+6,BAF,Bunker,PER_CONTAINER,160,ALWAYS
+7,FUEL,Fuel Surcharge,PERCENT_OF_BASE,8,ALWAYS
+8,FUEL,Fuel Surcharge,PERCENT_OF_BASE,8,ALWAYS
