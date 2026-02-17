@@ -1,0 +1,4 @@
+mode,equipment,length_m,width_m,height_m,max_payload_kg,volumetric_factor
+AIR,ULD,1.5,1.5,1.5,6800,167
+OCEAN,40DV,12.03,2.35,2.39,26700,
+TRUCK,53FT,16.15,2.59,2.70,20000,
