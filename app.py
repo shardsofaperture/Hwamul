@@ -7,7 +7,17 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from db import compute_grid_diff, delete_rows, get_conn, run_migrations, upsert_rows
+from db import (
+    compute_grid_diff,
+    delete_rows,
+    export_data_bundle,
+    get_conn,
+    import_data_bundle,
+    purge_demand_before,
+    run_migrations,
+    upsert_rows,
+    vacuum_db,
+)
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
@@ -82,6 +92,7 @@ if section == "Admin":
             "Rate cards",
             "Rate Test",
             "Demand entry",
+            "Data management",
         ],
     )
 
@@ -313,6 +324,63 @@ if section == "Admin":
                     st.success("Demand lines saved")
                 else:
                     st.error(f"Could not save demand lines: {err}")
+
+    elif admin_screen == "Data management":
+        st.subheader("Bulk export / import")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            full_blob = export_data_bundle("full")
+            st.download_button(
+                "Download full bundle",
+                data=full_blob,
+                file_name=f"hwamul_full_{date.today().isoformat()}.json",
+                mime="application/json",
+            )
+        with c2:
+            recent_blob = export_data_bundle("recent")
+            st.download_button(
+                "Download recent master data",
+                data=recent_blob,
+                file_name=f"hwamul_recent_{date.today().isoformat()}.json",
+                mime="application/json",
+            )
+        with c3:
+            history_blob = export_data_bundle("history")
+            st.download_button(
+                "Download history-only",
+                data=history_blob,
+                file_name=f"hwamul_history_{date.today().isoformat()}.json",
+                mime="application/json",
+            )
+
+        st.divider()
+        st.caption("Import is an upsert by business key: existing rows are updated, new rows inserted.")
+        bundle_upload = st.file_uploader("Upload export bundle (.json)", type=["json"], key="bundle_upload")
+        if st.button("Import bundle", key="import_bundle"):
+            if bundle_upload is None:
+                st.warning("Choose a bundle file first")
+            else:
+                try:
+                    stats = import_data_bundle(bundle_upload.getvalue())
+                    if stats:
+                        st.success("Imported rows: " + ", ".join([f"{k}={v}" for k, v in stats.items()]))
+                    else:
+                        st.info("Bundle was valid but contained no rows to import")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Import failed: {exc}")
+
+        st.divider()
+        st.subheader("Cleanup tools")
+        cutoff = st.date_input("Delete demand history before", value=date.today(), key="purge_cutoff")
+        if st.button("Purge historical demand", key="purge_demand"):
+            deleted = purge_demand_before(cutoff.isoformat())
+            st.success(
+                "Deleted rows: "
+                f"demand_lines={deleted['demand_lines']}, tranche_allocations={deleted['tranche_allocations']}"
+            )
+        if st.button("Compact database (VACUUM)", key="vacuum_db"):
+            vacuum_db()
+            st.success("Database compacted")
 
 else:
     alloc_tab, rec_tab, ship_tab, exp_tab = st.tabs(["Allocation", "Recommendations", "Shipment Builder", "Export"])
