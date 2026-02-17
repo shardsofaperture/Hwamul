@@ -21,12 +21,22 @@ class PackagingRule:
 
     @staticmethod
     def _to_meters(dimension: float) -> float:
-        """Normalize input dimension to meters.
+        """Normalize dimension input to meters using constrained ranges.
 
-        Legacy data uses meters while new import templates use centimeters.
-        We treat values above 3 as centimeters to support pallet/crate inputs.
+        Accepted inputs:
+        - meters: 0 < value <= 3
+        - centimeters: 3 < value <= 300
+
+        Values outside these ranges are rejected to avoid silently accepting
+        improbable dimensions.
         """
-        return dimension / 100.0 if dimension > 3 else dimension
+        if dimension <= 0:
+            raise ValueError("Pack dimension must be > 0")
+        if dimension <= 3:
+            return dimension
+        if dimension <= 300:
+            return dimension / 100.0
+        raise ValueError("Pack dimension is outside supported range (0, 300]")
 
     @property
     def dim_l_norm_m(self) -> float:
