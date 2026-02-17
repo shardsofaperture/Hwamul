@@ -273,11 +273,55 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         )
 
         selected_sku = sku_catalog[sku_catalog["sku_id"] == selected_sku_id].iloc[0]
+        conn = get_conn()
         c1, c2, c3, c4 = st.columns(4)
         c1.text_input("PN", value=str(selected_sku["part_number"]), disabled=True)
         c2.text_input("Supplier", value=f"{selected_sku['supplier_code']} ({selected_sku['supplier_name']})", disabled=True)
         c3.text_input("COO", value=str(selected_sku["default_coo"]), disabled=True)
         c4.text_input("Description", value=str(selected_sku["description"] or ""), disabled=True)
+
+        st.markdown("#### Conveyance restrictions for selected SKU")
+        equipment_rules = pd.read_sql_query(
+            """
+            SELECT
+                ep.id AS equipment_id,
+                ep.name,
+                ep.mode,
+                COALESCE(ser.allowed, 1) AS allowed
+            FROM equipment_presets ep
+            LEFT JOIN sku_equipment_rules ser
+              ON ser.equipment_id = ep.id
+             AND ser.sku_id = ?
+            ORDER BY UPPER(ep.mode), UPPER(ep.name)
+            """,
+            conn,
+            params=(int(selected_sku_id),),
+        )
+        equipment_rules["allowed"] = equipment_rules["allowed"].fillna(1).astype(int).astype(bool)
+        edited_rules = st.data_editor(
+            equipment_rules,
+            width="stretch",
+            hide_index=True,
+            disabled=["equipment_id", "name", "mode"],
+            column_config={
+                "equipment_id": st.column_config.NumberColumn("equipment_id"),
+                "name": st.column_config.TextColumn("equipment"),
+                "mode": st.column_config.TextColumn("mode"),
+                "allowed": st.column_config.CheckboxColumn("allowed"),
+            },
+            key=f"sku_eq_rules_{int(selected_sku_id)}",
+        )
+        if st.button("Save conveyance restrictions", key=f"save_sku_eq_rules_{int(selected_sku_id)}"):
+            with conn:
+                conn.execute("DELETE FROM sku_equipment_rules WHERE sku_id = ?", (int(selected_sku_id),))
+                conn.executemany(
+                    "INSERT INTO sku_equipment_rules(sku_id, equipment_id, allowed) VALUES (?, ?, ?)",
+                    [
+                        (int(selected_sku_id), int(row["equipment_id"]), 1 if bool(row["allowed"]) else 0)
+                        for _, row in edited_rules.iterrows()
+                    ],
+                )
+            st.success("Conveyance restrictions saved")
 
         pack_source = pd.read_sql_query(
             """

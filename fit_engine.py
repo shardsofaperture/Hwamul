@@ -1,7 +1,7 @@
 """Cube/payload fit utilities for quick planning."""
 from __future__ import annotations
 
-from math import ceil, floor, inf
+from math import ceil, floor
 from typing import Any
 
 
@@ -56,26 +56,89 @@ def required_shipped_units(required_units: float, pack_rule: Any) -> dict:
     }
 
 
+def _required_positive(value: float, field_name: str, equipment_name: str | None = None) -> float:
+    if value <= 0:
+        target = f" for equipment '{equipment_name}'" if equipment_name else ""
+        raise ValueError(f"Missing or invalid {field_name}{target}: must be > 0")
+    return value
+
+
 def equipment_capacity(equipment_preset: Any) -> dict:
-    length_m = float(_value(equipment_preset, "length_m", 0.0) or 0.0)
-    width_m = float(_value(equipment_preset, "width_m", 0.0) or 0.0)
-    height_m = float(_value(equipment_preset, "height_m", 0.0) or 0.0)
-    eq_volume_m3 = length_m * width_m * height_m if all(x > 0 for x in [length_m, width_m, height_m]) else 0.0
+    equipment_name = str(_value(equipment_preset, "name", "")).strip() or None
+    length_m = float(_value(equipment_preset, "internal_length_m", _value(equipment_preset, "length_m", 0.0)) or 0.0)
+    width_m = float(_value(equipment_preset, "internal_width_m", _value(equipment_preset, "width_m", 0.0)) or 0.0)
+    height_m = float(_value(equipment_preset, "internal_height_m", _value(equipment_preset, "height_m", 0.0)) or 0.0)
     max_payload_kg = float(_value(equipment_preset, "max_payload_kg", 0.0) or 0.0)
-    return {"eq_volume_m3": eq_volume_m3, "max_payload_kg": max_payload_kg}
+
+    length_m = _required_positive(length_m, "internal_length_m", equipment_name)
+    width_m = _required_positive(width_m, "internal_width_m", equipment_name)
+    height_m = _required_positive(height_m, "internal_height_m", equipment_name)
+    max_payload_kg = _required_positive(max_payload_kg, "max_payload_kg", equipment_name)
+
+    eq_volume_m3 = length_m * width_m * height_m
+    return {
+        "eq_volume_m3": eq_volume_m3,
+        "max_payload_kg": max_payload_kg,
+        "internal_length_m": length_m,
+        "internal_width_m": width_m,
+        "internal_height_m": height_m,
+    }
+
+
+def packs_per_layer(pack_dims: tuple[float, float], equipment_dims: tuple[float, float]) -> int:
+    pack_l, pack_w = pack_dims
+    eq_l, eq_w = equipment_dims
+    if min(pack_l, pack_w, eq_l, eq_w) <= 0:
+        raise ValueError("Pack and equipment footprint dimensions must be > 0")
+    best = max(
+        floor(eq_l / pack_l) * floor(eq_w / pack_w),
+        floor(eq_l / pack_w) * floor(eq_w / pack_l),
+    )
+    return max(0, int(best))
+
+
+def layers_allowed(pack_h: float, eq_h: float, stackable: bool, max_stack: int | None) -> int:
+    if pack_h <= 0 or eq_h <= 0:
+        raise ValueError("Pack and equipment heights must be > 0")
+    if not stackable:
+        return 1
+    layers = floor(eq_h / pack_h)
+    if max_stack is not None:
+        layers = min(layers, int(max_stack))
+    return max(1, int(layers))
 
 
 def packs_per_equipment(pack_rule: Any, equipment: Any) -> dict:
     caps = equipment_capacity(equipment)
-    eq_volume_m3 = float(caps["eq_volume_m3"])
+    eq_l = float(caps["internal_length_m"])
+    eq_w = float(caps["internal_width_m"])
+    eq_h = float(caps["internal_height_m"])
     max_payload_kg = float(caps["max_payload_kg"])
-    pvol = pack_volume_m3(pack_rule)
-    pgross = pack_gross_kg(pack_rule)
 
-    by_cube = floor(eq_volume_m3 / pvol) if eq_volume_m3 > 0 and pvol > 0 else inf
-    by_weight = floor(max_payload_kg / pgross) if max_payload_kg > 0 and pgross > 0 else inf
-    packs_fit = max(0, int(min(by_cube, by_weight))) if min(by_cube, by_weight) != inf else 0
-    return {"by_cube": by_cube, "by_weight": by_weight, "packs_fit": packs_fit}
+    pack_l = float(_value(pack_rule, "dim_l_m", 0.0) or 0.0)
+    pack_w = float(_value(pack_rule, "dim_w_m", 0.0) or 0.0)
+    pack_h = float(_value(pack_rule, "dim_h_m", 0.0) or 0.0)
+    _required_positive(pack_l, "dim_l_m")
+    _required_positive(pack_w, "dim_w_m")
+    _required_positive(pack_h, "dim_h_m")
+
+    pgross = pack_gross_kg(pack_rule)
+    _required_positive(pgross, "pack_gross_kg")
+
+    per_layer = packs_per_layer((pack_l, pack_w), (eq_l, eq_w))
+    max_stack = _value(pack_rule, "max_stack", None)
+    layers = layers_allowed(pack_h, eq_h, bool(_value(pack_rule, "stackable", 1)), max_stack if max_stack not in ("", None) else None)
+
+    by_grid = int(per_layer * layers)
+    by_weight = floor(max_payload_kg / pgross)
+    packs_fit = max(0, int(min(by_grid, by_weight)))
+    return {
+        "packs_per_layer": per_layer,
+        "layers_allowed": layers,
+        "by_grid": by_grid,
+        "by_weight": by_weight,
+        "packs_fit": packs_fit,
+    }
 
 
 def equipment_count_for_packs(packs_required: int, packs_fit: int) -> int:

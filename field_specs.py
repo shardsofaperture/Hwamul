@@ -74,12 +74,12 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "miles": FieldSpec("decimal", min_value=0, description="Optional trucking miles override", example="320"),
     },
     "equipment": {
-        "name": FieldSpec("text", required=True, max_length=40, description="Preset name", example="40DV"),
+        "name": FieldSpec("text", required=True, max_length=40, description="Preset name", example="40HC_DRY"),
         "mode": FieldSpec("text", required=True, max_length=24, description="Transport mode", example="OCEAN"),
-        "length_m": FieldSpec("decimal", min_value=0.01, description="Internal length (m)", example="12.03"),
-        "width_m": FieldSpec("decimal", min_value=0.01, description="Internal width (m)", example="2.35"),
-        "height_m": FieldSpec("decimal", min_value=0.01, description="Internal height (m)", example="2.39"),
-        "max_payload_kg": FieldSpec("decimal", min_value=0, description="Payload cap", example="26700"),
+        "internal_length_m": FieldSpec("decimal", required=True, min_value=0.01, description="Internal length (m)", example="12.03"),
+        "internal_width_m": FieldSpec("decimal", required=True, min_value=0.01, description="Internal width (m)", example="2.352"),
+        "internal_height_m": FieldSpec("decimal", required=True, min_value=0.01, description="Internal height (m)", example="2.698"),
+        "max_payload_kg": FieldSpec("decimal", required=True, min_value=0.01, description="Payload cap", example="26540"),
     },
     "rate_cards": {
         "mode": FieldSpec("text", required=True, max_length=24, description="Mode", example="OCEAN"),
