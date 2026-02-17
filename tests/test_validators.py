@@ -18,3 +18,8 @@ def test_validate_positive_rules():
 def test_validate_dates_detects_invalid():
     df = pd.DataFrame([{"need_date": "2026-01-01"}, {"need_date": "bad-date"}])
     assert validate_dates(df, ["need_date"]) == ["need_date has invalid dates"]
+
+
+def test_require_cols_enforces_part_number_identifier():
+    df = pd.DataFrame([{"part_number": " ", "default_coo": "CN"}])
+    assert require_cols(df, ["part_number"]) == ["part_number"]

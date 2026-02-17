@@ -37,9 +37,9 @@ python launcher.py
 
 ## What the app includes
 1. **Equipment presets** (53ft trailer, 40/20 dry, 40/20 reefer, Air) with editable dimensions, payload, and volumetric factor.
-2. **Lead times** by `(country_of_origin, mode)` plus SKU-mode overrides and manual recommendation override.
+2. **Lead times** by `(country_of_origin, mode)` plus part_number-mode overrides and manual recommendation override.
 3. **Rates configuration** for ocean/truck/air pricing models and fixed/surcharge fields.
-4. **Master data** for SKUs and packaging rules.
+4. **Master data** for part numbers and packaging rules.
 5. **CSV import** for demand/BOM data.
 6. **Allocation** with tranche split, pack rounding (MOQ/increments), and excess carry-forward.
 7. **Recommendations** with ship-by date, feasibility, cost, utilization, and ranking.
@@ -51,7 +51,7 @@ Templates are generated in `templates/` at startup.
 
 ### demand_template.csv
 Columns:
-- `sku` (string)
+- `part_number` (string)
 - `need_date` (YYYY-MM-DD)
 - `qty` (number, base UOM)
 - `coo_override` (optional string)
@@ -60,7 +60,7 @@ Columns:
 
 ### bom_template.csv
 Columns:
-- `sku`
+- `part_number`
 - `need_date`
 - `qty`
 
