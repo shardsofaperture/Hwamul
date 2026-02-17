@@ -11,7 +11,11 @@ from typing import Iterable
 
 import pandas as pd
 
-DB_PATH = Path(os.getenv("PLANNER_DB_PATH", "planner.db"))
+_env_db_path = os.getenv("PLANNER_DB_PATH")
+if _env_db_path:
+    DB_PATH = Path(_env_db_path).expanduser().resolve()
+else:
+    DB_PATH = (Path(__file__).resolve().parent / "planner.db").resolve()
 
 
 MIGRATIONS: list[tuple[int, str]] = [
