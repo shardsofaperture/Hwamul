@@ -27,12 +27,43 @@ def _setup_min_db() -> sqlite3.Connection:
         );
         CREATE TABLE equipment_presets (
             id INTEGER PRIMARY KEY,
+            equipment_code TEXT,
             name TEXT,
             mode TEXT,
             internal_length_m REAL,
             internal_width_m REAL,
             internal_height_m REAL,
-            max_payload_kg REAL
+            max_payload_kg REAL,
+            active INTEGER DEFAULT 1,
+            volumetric_factor REAL,
+            max_gross_kg REAL,
+            tare_kg REAL
+        );
+        CREATE TABLE truck_configs (
+            id INTEGER PRIMARY KEY,
+            truck_config_code TEXT,
+            description TEXT,
+            steer_axles INTEGER,
+            drive_axles INTEGER,
+            trailer_axles INTEGER,
+            axle_span_ft REAL,
+            tractor_tare_lb REAL,
+            trailer_tare_lb REAL,
+            container_tare_lb REAL,
+            max_gvw_lb REAL,
+            steer_weight_share_pct REAL,
+            drive_weight_share_pct REAL,
+            trailer_weight_share_pct REAL,
+            active INTEGER
+        );
+        CREATE TABLE jurisdiction_weight_rules (
+            id INTEGER PRIMARY KEY,
+            jurisdiction_code TEXT,
+            max_gvw_lb REAL,
+            max_single_axle_lb REAL,
+            max_tandem_lb REAL,
+            notes TEXT,
+            active INTEGER
         );
         CREATE TABLE sku_equipment_rules (
             sku_id INTEGER,
@@ -87,13 +118,16 @@ def _setup_min_db() -> sqlite3.Connection:
         "INSERT INTO packaging_rules VALUES (1, 1, 'STD', 1, 6, 1.0, 0.0, 1.0, 1.0, 1.0, 1, 1, 1, NULL)"
     )
     conn.execute(
-        "INSERT INTO equipment_presets VALUES (1, 'AIR', 'Air', 10.0, 1.0, 1.0, 1000.0)"
+        "INSERT INTO equipment_presets VALUES (1, 'AIR_STD', 'AIR', 'Air', 10.0, 1.0, 1.0, 1000.0, 1, 167.0, 0, 0)"
     )
     conn.execute("INSERT INTO lead_times VALUES (1, 'CN', 'AIR', 7)")
     conn.execute("INSERT INTO lead_time_overrides VALUES (1, 1, 'AIR', 3)")
     conn.execute(
-        "INSERT INTO rates VALUES (1, 'AIR', 'AIR', 'per_container', 1000, NULL, 0, 0)"
+        "INSERT INTO rates VALUES (1, 'AIR', 'AIR_STD', 'per_container', 1000, NULL, 0, 0)"
     )
+
+    conn.execute("INSERT INTO truck_configs VALUES (1, '5AXLE_TL', 'baseline', 1, 2, 2, 51.0, 18000, 8000, 8500, 80000, 0.12, 0.44, 0.44, 1)")
+    conn.execute("INSERT INTO jurisdiction_weight_rules VALUES (1, 'US_FED_INTERSTATE', 80000, 20000, 34000, 'baseline', 1)")
     conn.commit()
     return conn
 
@@ -122,8 +156,8 @@ def test_plan_quick_run_uses_lead_override_for_sku_id():
 
 def test_disallowed_equipment_filtering():
     conn = _setup_min_db()
-    conn.execute("INSERT INTO equipment_presets VALUES (2, 'DRY_STD', 'OCEAN', 12, 2.3, 2.3, 26000)")
-    conn.execute("INSERT INTO equipment_presets VALUES (3, '40HC_DRY', 'OCEAN', 12.03, 2.352, 2.698, 26540)")
+    conn.execute("INSERT INTO equipment_presets VALUES (2, 'CNT_40_DRY_STD', 'DRY_STD', 'OCEAN', 12, 2.3, 2.3, 26000, 1, NULL, 0, 0)")
+    conn.execute("INSERT INTO equipment_presets VALUES (3, 'CNT_40_DRY_HC', '40HC_DRY', 'OCEAN', 12.03, 2.352, 2.698, 26540, 1, NULL, 0, 0)")
     conn.execute("INSERT INTO sku_equipment_rules VALUES (1, 1, 0)")  # AIR denied
     conn.execute("INSERT INTO sku_equipment_rules VALUES (1, 2, 0)")  # DRY_STD denied
     conn.execute("INSERT INTO sku_equipment_rules VALUES (1, 3, 1)")  # 40HC allowed
@@ -150,7 +184,7 @@ def test_disallowed_equipment_filtering():
 def test_missing_equipment_payload_is_reported_as_excluded_reason():
     conn = _setup_min_db()
     conn.execute("DELETE FROM equipment_presets")
-    conn.execute("INSERT INTO equipment_presets VALUES (1, 'BROKEN', 'AIR', 10.0, 1.0, 1.0, 0.0)")
+    conn.execute("INSERT INTO equipment_presets VALUES (1, 'BROKEN', 'BROKEN', 'AIR', 10.0, 1.0, 1.0, 0.0, 1, NULL, 0, 0)")
     conn.commit()
 
     result = plan_quick_run(
