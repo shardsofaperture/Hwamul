@@ -60,12 +60,12 @@ def seed_if_empty() -> None:
         conn.executemany(
             """
             INSERT INTO packaging_rules
-            (sku_id, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+            (sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
-                (sku_map["MFG-88421"], 24, 1.2, 0.8, 0.55, 0.40, 0.35, 5, 5, 1),
-                (sku_map["INT-100045"], 12, 2.1, 1.0, 0.60, 0.45, 0.40, 2, 2, 1),
+                (sku_map["MFG-88421"], "STANDARD", "STANDARD", 1, 24, 1.2, 0.8, 0.55, 0.40, 0.35, 5, 5, 1),
+                (sku_map["INT-100045"], "STANDARD", "STANDARD", 1, 12, 2.1, 1.0, 0.60, 0.45, 0.40, 2, 2, 1),
             ],
         )
 

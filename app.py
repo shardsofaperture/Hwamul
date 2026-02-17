@@ -17,6 +17,8 @@ from db import (
     run_migrations,
     upsert_rows,
     vacuum_db,
+    map_import_demand_rows,
+    resolve_pack_rule_for_demand,
 )
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes
@@ -170,66 +172,124 @@ if section == "Admin":
         sku_catalog = read_sku_catalog()
         if sku_catalog.empty:
             st.warning("No SKUs found. Create a SKU first.")
-            st.info("Optional: go to Admin → SKUs to create a new SKU.")
+            st.stop()
+
+        search = st.text_input("Search SKU (PN, supplier code/name, description)", key="pack_sku_search")
+        if search:
+            mask = (
+                sku_catalog["part_number"].str.contains(search, case=False, na=False)
+                | sku_catalog["supplier_code"].str.contains(search, case=False, na=False)
+                | sku_catalog["supplier_name"].str.contains(search, case=False, na=False)
+                | sku_catalog["description"].fillna("").str.contains(search, case=False, na=False)
+            )
+            sku_catalog = sku_catalog[mask]
+        if sku_catalog.empty:
+            st.info("No SKU matches your search.")
             st.stop()
 
         sku_catalog = sku_catalog.copy()
-        sku_catalog["select_label"] = sku_catalog["part_number"] + " — " + sku_catalog["description"].fillna("")
+        sku_catalog["select_label"] = (
+            sku_catalog["part_number"]
+            + " | SUP:" + sku_catalog["supplier_code"]
+            + " (" + sku_catalog["supplier_name"] + ")"
+            + " | COO:" + sku_catalog["default_coo"]
+            + " | " + sku_catalog["description"].fillna("")
+        )
         sku_options = sku_catalog["sku_id"].tolist()
-        default_sku = st.session_state.get("selected_sku_id")
-        if default_sku not in sku_options:
-            default_sku = sku_options[0]
-
         selected_sku_id = st.selectbox(
             "Select SKU",
             options=sku_options,
-            index=sku_options.index(default_sku),
             format_func=lambda sid: sku_catalog.loc[sku_catalog["sku_id"] == sid, "select_label"].iloc[0],
             key="selected_sku_id",
         )
 
         selected_sku = sku_catalog[sku_catalog["sku_id"] == selected_sku_id].iloc[0]
-        col1, col2, col3 = st.columns(3)
-        col1.text_input("Part Number", value=str(selected_sku["part_number"]), disabled=True)
-        col2.text_input("Description", value=str(selected_sku["description"] or ""), disabled=True)
-        col3.text_input("Default COO", value=str(selected_sku["default_coo"]), disabled=True)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.text_input("PN", value=str(selected_sku["part_number"]), disabled=True)
+        c2.text_input("Supplier", value=f"{selected_sku['supplier_code']} ({selected_sku['supplier_name']})", disabled=True)
+        c3.text_input("COO", value=str(selected_sku["default_coo"]), disabled=True)
+        c4.text_input("Description", value=str(selected_sku["description"] or ""), disabled=True)
 
-        source = pd.read_sql_query("""
-            SELECT pr.*, sm.part_number, s.supplier_code, sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
-            FROM packaging_rules pr
-            JOIN sku_master sm ON sm.sku_id = pr.sku_id
-            JOIN suppliers s ON s.supplier_id = sm.supplier_id
-            ORDER BY sm.part_number, s.supplier_code, pr.pack_type
-            """, get_conn())
-        filtered = source[source["sku_id"] == selected_sku_id].copy()
+        pack_source = pd.read_sql_query(
+            "SELECT * FROM packaging_rules WHERE sku_id = ? ORDER BY is_default DESC, id",
+            get_conn(),
+            params=(selected_sku_id,),
+        )
+        selector_options = pack_source["id"].tolist() if not pack_source.empty else []
+        selected_pack_id = st.selectbox("Selected pack rule", [None] + selector_options, key="selected_pack_rule")
+
+        b1, b2, b3, b4 = st.columns(4)
+        if b1.button("Add pack rule"):
+            conn = get_conn()
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO packaging_rules(
+                        sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                        dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
+                    ) VALUES (?, 'NEW', 'STANDARD', 0, 1, 0, 0, 0.1, 0.1, 0.1, 1, 1, 1, NULL)
+                    """,
+                    (selected_sku_id,),
+                )
+            st.rerun()
+        if b2.button("Duplicate selected pack rule") and selected_pack_id:
+            conn = get_conn()
+            row = conn.execute("SELECT * FROM packaging_rules WHERE id = ?", (selected_pack_id,)).fetchone()
+            if row:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO packaging_rules(
+                            sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                            dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
+                        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["sku_id"],
+                            f"{row['pack_name']}_COPY",
+                            row["pack_type"],
+                            row["units_per_pack"], row["kg_per_unit"], row["pack_tare_kg"],
+                            row["dim_l_m"], row["dim_w_m"], row["dim_h_m"],
+                            row["min_order_packs"], row["increment_packs"], row["stackable"], row["max_stack"],
+                        ),
+                    )
+                st.rerun()
+        if b3.button("Set as default") and selected_pack_id:
+            conn = get_conn()
+            with conn:
+                conn.execute("UPDATE packaging_rules SET is_default = 0 WHERE sku_id = ?", (selected_sku_id,))
+                conn.execute("UPDATE packaging_rules SET is_default = 1 WHERE id = ?", (selected_pack_id,))
+            st.rerun()
+        delete_confirm = b4.checkbox("Confirm delete", key="confirm_pack_delete")
+        if b4.button("Delete pack rule") and selected_pack_id:
+            if delete_confirm:
+                conn = get_conn()
+                with conn:
+                    conn.execute("DELETE FROM packaging_rules WHERE id = ?", (selected_pack_id,))
+                st.rerun()
+            else:
+                st.warning("Check confirm delete first.")
+
         edited = st.data_editor(
-            filtered.drop(columns=["part_number", "supplier_code", "sku_label"], errors="ignore"),
+            pack_source,
             num_rows="dynamic",
             width="stretch",
+            column_order=[
+                "id", "sku_id", "pack_name", "pack_type", "units_per_pack", "kg_per_unit", "pack_tare_kg",
+                "dim_l_m", "dim_w_m", "dim_h_m", "min_order_packs", "increment_packs", "stackable", "max_stack", "is_default"
+            ],
+            disabled=["sku_id"],
             key="pack_rules_editor",
         )
 
-        if not edited.empty:
-            edited["sku_id"] = selected_sku_id
-
         if st.button("Save changes", key="save_pack"):
-            if not st.session_state.get("selected_sku_id"):
-                st.error("Select a SKU before saving pack rules")
-                st.stop()
-
-            existing = set(read_table("sku_master")["sku_id"].tolist())
-            if not edited["sku_id"].isin(existing).all():
-                st.error("Pack rules reference a nonexistent sku_id")
-                st.stop()
-
-            errors = require_cols(edited, ["sku_id", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
-            defaults = edited.groupby("sku_id")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
-            if not defaults.empty and (defaults < 1).any():
-                errors.append("Each SKU must have at least one default pack type")
+            errors = require_cols(edited, ["sku_id", "pack_name", "units_per_pack"]) + validate_positive(edited, ["units_per_pack", "dim_l_m", "dim_w_m", "dim_h_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
+            if edited["is_default"].sum() > 1:
+                errors.append("Only one default pack rule is allowed per SKU")
             if errors:
                 st.error("; ".join(errors))
             else:
-                ok, err = save_grid("packaging_rules", filtered.drop(columns=["part_number", "supplier_code", "sku_label"], errors="ignore"), edited, ["sku_id", "pack_type"])
+                ok, err = save_grid("packaging_rules", pack_source, edited, ["id"])
                 if ok:
                     st.success("Pack rules saved")
                     st.rerun()
@@ -399,20 +459,22 @@ if section == "Admin":
             if st.button("Append imported rows"):
                 sku_catalog = read_sku_catalog()
                 import_frame = imported_edit.copy()
-                if "supplier_code" in import_frame.columns:
-                    merged = import_frame.merge(sku_catalog[["sku_id", "part_number", "supplier_code"]], on=["part_number", "supplier_code"], how="left")
+                supplier_choices = st.session_state.setdefault("import_supplier_map", {})
+                merged, map_errors = map_import_demand_rows(import_frame, sku_catalog, supplier_choices)
+                if "supplier_code" not in import_frame.columns:
+                    ambiguous_parts = merged.groupby("part_number")["sku_id"].nunique(dropna=True)
+                    for pn in ambiguous_parts[ambiguous_parts > 1].index.tolist():
+                        sup_opts = sku_catalog[sku_catalog["part_number"] == pn]["supplier_code"].tolist()
+                        current = supplier_choices.get(pn, sup_opts[0] if sup_opts else None)
+                        supplier_choices[pn] = st.selectbox(f"Select supplier for {pn}", sup_opts, index=sup_opts.index(current) if current in sup_opts else 0, key=f"imp_sup_{pn}")
+                    merged, map_errors = map_import_demand_rows(import_frame, sku_catalog, supplier_choices)
+                if map_errors:
+                    st.error("; ".join(map_errors))
                 else:
-                    st.warning("supplier_code missing in import. Using DEFAULT or prompting selection for ambiguous part numbers.")
-                    merged = import_frame.merge(sku_catalog[["sku_id", "part_number", "supplier_code"]], on=["part_number"], how="left")
-                    amb = merged[merged.duplicated(subset=["part_number"], keep=False)]["part_number"].dropna().unique().tolist()
-                    for pn in amb:
-                        choices = sku_catalog[sku_catalog["part_number"] == pn]["sku_id"].tolist()
-                        pick = st.selectbox(f"Select supplier variant for {pn}", choices, key=f"imp_{pn}")
-                        merged.loc[merged["part_number"] == pn, "sku_id"] = pick
-                if merged["sku_id"].isna().any():
-                    st.error("Could not map all imported part numbers to sku_id")
-                else:
-                    to_insert = merged[["sku_id", "need_date", "qty", "coo_override", "priority", "notes"]]
+                    cols = ["sku_id", "need_date", "qty", "coo_override", "priority", "notes"]
+                    if "pack_rule_id" in merged.columns:
+                        cols.append("pack_rule_id")
+                    to_insert = merged[cols]
                     conn = get_conn()
                     with conn:
                         to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
@@ -502,9 +564,16 @@ else:
         else:
             line = st.selectbox("Demand line", demands["id"].tolist())
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["sku_id"] == d["sku_id"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku_id"] == d["sku_id"]].iloc[0]
-            rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
+            conn = get_conn()
+            d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
+            p = resolve_pack_rule_for_demand(conn, d_row)
+            sku_pack_options = packs[packs["sku_id"] == d["sku_id"]][["id", "pack_name"]]
+            selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"rec_pack_override_{line}")
+            if st.button("Save pack override", key=f"save_rec_pack_override_{line}"):
+                with conn:
+                    conn.execute("UPDATE demand_lines SET pack_rule_id = ? WHERE id = ?", (selected_override, int(d["id"])))
+                st.rerun()
+            rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys() if k in p.keys()})
 
             st.write("Define tranches")
             tr_input = st.data_editor(
@@ -536,9 +605,16 @@ else:
         if not demands.empty and not packs.empty and not eq.empty:
             line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line")
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["sku_id"] == d["sku_id"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku_id"] == d["sku_id"]].iloc[0]
-            rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
+            conn = get_conn()
+            d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
+            p = resolve_pack_rule_for_demand(conn, d_row)
+            sku_pack_options = packs[packs["sku_id"] == d["sku_id"]][["id", "pack_name"]]
+            selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"alloc_pack_override_{line}")
+            if st.button("Save pack override", key=f"save_alloc_pack_override_{line}"):
+                with conn:
+                    conn.execute("UPDATE demand_lines SET pack_rule_id = ? WHERE id = ?", (selected_override, int(d["id"])))
+                st.rerun()
+            rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys() if k in p.keys()})
             need_date = pd.to_datetime(d["need_date"]).date()
             coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("sku_id").loc[d["sku_id"], "default_coo"]
 

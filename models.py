@@ -7,20 +7,21 @@ from math import ceil
 
 @dataclass
 class PackagingRule:
-    part_number: str
     units_per_pack: float
     kg_per_unit: float
     pack_tare_kg: float
-    pack_length_m: float
-    pack_width_m: float
-    pack_height_m: float
+    dim_l_m: float
+    dim_w_m: float
+    dim_h_m: float
     min_order_packs: int = 1
     increment_packs: int = 1
     stackable: bool = True
+    max_stack: int | None = None
+    part_number: str = ""
 
     @property
     def pack_cube_m3(self) -> float:
-        return self.pack_length_m * self.pack_width_m * self.pack_height_m
+        return self.dim_l_m * self.dim_w_m * self.dim_h_m
 
     @property
     def gross_pack_weight_kg(self) -> float:
@@ -40,7 +41,6 @@ class Equipment:
     @property
     def volume_m3(self) -> float:
         return self.length_m * self.width_m * self.height_m
-
 
 
 def rounded_order_packs(required_units: float, rule: PackagingRule) -> int:
