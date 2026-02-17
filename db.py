@@ -883,6 +883,155 @@ def _migration_14_equipment_internal_dims_and_rules(conn: sqlite3.Connection) ->
 MIGRATIONS.append((14, _migration_14_equipment_internal_dims_and_rules))
 
 
+def _migration_15_canonical_equipment_codes(conn: sqlite3.Connection) -> None:
+    eq_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='equipment_presets'"
+    ).fetchone()
+    if not eq_exists:
+        return
+
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(equipment_presets)").fetchall()}
+    if "equipment_code" not in cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN equipment_code TEXT")
+    if "active" not in cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+    if "is_reefer" not in cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN is_reefer INTEGER NOT NULL DEFAULT 0")
+    if "is_high_cube" not in cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN is_high_cube INTEGER NOT NULL DEFAULT 0")
+    if "equipment_class" not in cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN equipment_class TEXT")
+
+    conn.execute("UPDATE equipment_presets SET mode = UPPER(TRIM(COALESCE(mode, '')))")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_equipment_presets_equipment_code ON equipment_presets(equipment_code) WHERE equipment_code IS NOT NULL")
+
+    canonical_rows = [
+        ("TRL_53_STD", "53' Trailer (STD)", "TRUCK", "TRAILER", 16.15, 2.59, 2.70, 20000.0, 0, 0, 1, None, "domestic dry van"),
+        ("CNT_20_DRY_STD", "20' Dry (STD)", "OCEAN", "CONTAINER", 5.90, 2.35, 2.39, 28200.0, 0, 0, 1, None, None),
+        ("CNT_40_DRY_STD", "40' Dry (STD)", "OCEAN", "CONTAINER", 12.03, 2.35, 2.39, 26700.0, 0, 0, 1, None, None),
+        ("CNT_40_DRY_HC", "40' Dry (High Cube)", "OCEAN", "CONTAINER", 12.03, 2.352, 2.698, 26540.0, 0, 1, 1, None, "40ft high cube dry"),
+        ("CNT_20_RF", "20' Reefer", "OCEAN", "CONTAINER", 5.44, 2.29, 2.26, 21100.0, 1, 0, 1, None, "temp controlled"),
+        ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.58, 2.29, 2.26, 27500.0, 1, 0, 1, None, "temp controlled"),
+        ("CNT_49_STD", "49' Standard (User-defined)", "OCEAN", "CONTAINER", 14.93, 2.50, 2.70, 19500.0, 0, 0, 1, None, "user-defined 49ft standard"),
+        ("AIR_STD", "Air Freight (Chargeable Weight)", "AIR", "ULD", 1.0, 1.0, 1.0, 50000.0, 0, 0, 1, 167.0, "volumetric factor kg/m3 configurable"),
+    ]
+    for code, display, mode, cls, l, w, h, payload, is_rf, is_hc, active, vf, notes in canonical_rows:
+        existing = conn.execute(
+            "SELECT id FROM equipment_presets WHERE equipment_code = ?",
+            (code,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE equipment_presets
+                SET name = ?, mode = ?, equipment_class = ?,
+                    length_m = ?, width_m = ?, height_m = ?,
+                    internal_length_m = ?, internal_width_m = ?, internal_height_m = ?,
+                    max_payload_kg = ?, is_reefer = ?, is_high_cube = ?, active = ?,
+                    volumetric_factor = ?, optional_constraints = ?
+                WHERE id = ?
+                """,
+                (display, mode, cls, l, w, h, l, w, h, payload, is_rf, is_hc, active, vf, notes, int(existing["id"])),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO equipment_presets(
+                    equipment_code, name, mode, equipment_class,
+                    length_m, width_m, height_m,
+                    internal_length_m, internal_width_m, internal_height_m,
+                    max_payload_kg, is_reefer, is_high_cube, active,
+                    volumetric_factor, optional_constraints
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (code, display, mode, cls, l, w, h, l, w, h, payload, is_rf, is_hc, active, vf, notes),
+            )
+
+    def _norm_token(value: str | None) -> str:
+        if not value:
+            return ""
+        return "".join(ch for ch in value.strip().upper() if ch.isalnum())
+
+    synonym_to_code = {
+        "53": "TRL_53_STD",
+        "53FT": "TRL_53_STD",
+        "53FOOT": "TRL_53_STD",
+        "53TRAILER": "TRL_53_STD",
+        "53TRAILERSTD": "TRL_53_STD",
+        "53FOOTER": "TRL_53_STD",
+        "53TRAILER": "TRL_53_STD",
+        "40RF": "CNT_40_RF",
+        "40REEFER": "CNT_40_RF",
+        "40FTREEFER": "CNT_40_RF",
+        "AIR": "AIR_STD",
+        "AIRFREIGHT": "AIR_STD",
+        "AIRSTANDARD": "AIR_STD",
+        "ULD": "AIR_STD",
+        "53_TRAILER": "TRL_53_STD",
+        "20DRY": "CNT_20_DRY_STD",
+        "40DRY": "CNT_40_DRY_STD",
+        "40HCDRY": "CNT_40_DRY_HC",
+        "20RF": "CNT_20_RF",
+        "49STD": "CNT_49_STD",
+    }
+
+    canonical_id = {
+        row["equipment_code"]: int(row["id"])
+        for row in conn.execute("SELECT id, equipment_code FROM equipment_presets WHERE equipment_code IS NOT NULL").fetchall()
+    }
+    rows = [dict(r) for r in conn.execute("SELECT id, name, mode, equipment_code FROM equipment_presets").fetchall()]
+    remap: list[tuple[int, int]] = []
+    for row in rows:
+        token = _norm_token(row.get("equipment_code") or row.get("name"))
+        code = synonym_to_code.get(token)
+        mode = (row.get("mode") or "").upper().strip()
+        if not code and mode == "AIR":
+            code = "AIR_STD"
+        if code and code in canonical_id:
+            eid = int(row["id"])
+            cid = canonical_id[code]
+            if eid == cid:
+                conn.execute(
+                    "UPDATE equipment_presets SET equipment_code = ?, active = 1 WHERE id = ?",
+                    (code, eid),
+                )
+            else:
+                remap.append((eid, cid))
+
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    for old_id, new_id in remap:
+        for t in table_rows:
+            table_name = t["name"]
+            if table_name.startswith("sqlite_") or table_name == "equipment_presets":
+                continue
+            tcols = {c[1] for c in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+            if "equipment_id" in tcols:
+                conn.execute(f"UPDATE {table_name} SET equipment_id = ? WHERE equipment_id = ?", (new_id, old_id))
+
+        conn.execute(
+            "UPDATE equipment_presets SET active = 0, equipment_code = COALESCE(equipment_code, 'LEGACY_' || id) WHERE id = ?",
+            (old_id,),
+        )
+
+    text_cols = [("rate_card", "equipment"), ("rates", "equipment_name")]
+    for table_name, col in text_cols:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (table_name,)
+        ).fetchone()
+        if not table_exists:
+            continue
+        for row in conn.execute(f"SELECT id, {col} FROM {table_name}").fetchall():
+            token = _norm_token(row[col])
+            code = synonym_to_code.get(token)
+            if code:
+                conn.execute(f"UPDATE {table_name} SET {col} = ? WHERE id = ?", (code, int(row["id"])))
+
+    conn.execute("UPDATE equipment_presets SET active = 0 WHERE equipment_code IS NULL")
+
+
+MIGRATIONS.append((15, _migration_15_canonical_equipment_codes))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1000,7 +1149,7 @@ EXPORT_TABLE_ORDER = [
 ]
 
 TABLE_KEY_COLS: dict[str, list[str]] = {
-    "equipment_presets": ["name"],
+    "equipment_presets": ["equipment_code"],
     "sku_equipment_rules": ["sku_id", "equipment_id"],
     "suppliers": ["supplier_code"],
     "sku_master": ["part_number", "supplier_id"],

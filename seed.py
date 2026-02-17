@@ -15,18 +15,18 @@ def seed_if_empty() -> None:
         conn.executemany(
             """
             INSERT INTO equipment_presets
-            (name, mode, length_m, width_m, height_m, internal_length_m, internal_width_m, internal_height_m, max_payload_kg, volumetric_factor, optional_constraints)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (equipment_code, name, mode, equipment_class, length_m, width_m, height_m, internal_length_m, internal_width_m, internal_height_m, max_payload_kg, volumetric_factor, is_reefer, is_high_cube, active, optional_constraints)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("53_TRAILER", "TRUCK", 16.15, 2.59, 2.70, 16.15, 2.59, 2.70, 20000, None, "domestic dry van"),
-                ("40DRY", "OCEAN", 12.03, 2.35, 2.39, 12.03, 2.35, 2.39, 26700, None, None),
-                ("20DRY", "OCEAN", 5.90, 2.35, 2.39, 5.90, 2.35, 2.39, 28200, None, None),
-                ("40RF", "OCEAN", 11.58, 2.29, 2.26, 11.58, 2.29, 2.26, 27500, None, "temp controlled"),
-                ("20RF", "OCEAN", 5.44, 2.29, 2.26, 5.44, 2.29, 2.26, 21100, None, "temp controlled"),
-                ("40HC_DRY", "OCEAN", 12.03, 2.352, 2.698, 12.03, 2.352, 2.698, 26540, None, "40ft high cube dry"),
-                ("49STD", "TRUCK", 14.93, 2.50, 2.70, 14.93, 2.50, 2.70, 19500, None, "user-defined 49ft standard"),
-                ("AIR", "AIR", 1, 1, 1, 1, 1, 1, 50000, 167.0, "volumetric factor kg/m3 configurable"),
+                ("TRL_53_STD", "53' Trailer (STD)", "TRUCK", "TRAILER", 16.15, 2.59, 2.70, 16.15, 2.59, 2.70, 20000, None, 0, 0, 1, "domestic dry van"),
+                ("CNT_20_DRY_STD", "20' Dry (STD)", "OCEAN", "CONTAINER", 5.90, 2.35, 2.39, 5.90, 2.35, 2.39, 28200, None, 0, 0, 1, None),
+                ("CNT_40_DRY_STD", "40' Dry (STD)", "OCEAN", "CONTAINER", 12.03, 2.35, 2.39, 12.03, 2.35, 2.39, 26700, None, 0, 0, 1, None),
+                ("CNT_40_DRY_HC", "40' Dry (High Cube)", "OCEAN", "CONTAINER", 12.03, 2.352, 2.698, 12.03, 2.352, 2.698, 26540, None, 0, 1, 1, "40ft high cube dry"),
+                ("CNT_20_RF", "20' Reefer", "OCEAN", "CONTAINER", 5.44, 2.29, 2.26, 5.44, 2.29, 2.26, 21100, None, 1, 0, 1, "temp controlled"),
+                ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.58, 2.29, 2.26, 11.58, 2.29, 2.26, 27500, None, 1, 0, 1, "temp controlled"),
+                ("CNT_49_STD", "49' Standard (User-defined)", "OCEAN", "CONTAINER", 14.93, 2.50, 2.70, 14.93, 2.50, 2.70, 19500, None, 0, 0, 1, "user-defined 49ft standard"),
+                ("AIR_STD", "Air Freight (Chargeable Weight)", "AIR", "ULD", 1, 1, 1, 1, 1, 1, 50000, 167.0, 0, 0, 1, "volumetric factor kg/m3 configurable"),
             ],
         )
         conn.executemany(
@@ -46,11 +46,11 @@ def seed_if_empty() -> None:
         conn.executemany(
             "INSERT INTO rates(mode, equipment_name, pricing_model, rate_value, minimum_charge, fixed_fee, surcharge, notes) VALUES (?,?,?,?,?,?,?,?)",
             [
-                ("Ocean", "40DRY", "per_container", 3000, None, 200, 0, None),
-                ("Ocean", "20DRY", "per_container", 1800, None, 200, 0, None),
-                ("Truck", "53_TRAILER", "per_load", 1800, None, 150, 0, None),
-                ("Truck", "53_TRAILER", "per_mile", 2.2, None, 100, 0, None),
-                ("Air", "AIR", "per_kg", 3.8, 250, 75, 0, None),
+                ("Ocean", "CNT_40_DRY_STD", "per_container", 3000, None, 200, 0, None),
+                ("Ocean", "CNT_20_DRY_STD", "per_container", 1800, None, 200, 0, None),
+                ("Truck", "TRL_53_STD", "per_load", 1800, None, 150, 0, None),
+                ("Truck", "TRL_53_STD", "per_mile", 2.2, None, 100, 0, None),
+                ("Air", "AIR_STD", "per_kg", 3.8, 250, 75, 0, None),
             ],
         )
         conn.execute("INSERT OR IGNORE INTO suppliers(supplier_code, supplier_name) VALUES (?,?)", ("DEFAULT", "Default Supplier"))

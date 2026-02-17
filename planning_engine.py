@@ -21,6 +21,10 @@ def norm_mode(mode: str | None) -> str:
     return (mode or "").strip().upper()
 
 
+def norm_equipment_code(code: str | None) -> str:
+    return (code or "").strip().upper()
+
+
 
 def _legacy_rate_total(rate_row: dict[str, Any], *, equipment_count: int, shipped_units: float, shipped_weight_kg: float, shipped_volume_m3: float) -> float:
     model = str(rate_row.get("pricing_model") or "").lower().strip()
@@ -112,7 +116,7 @@ def plan_quick_run(
     shipped_volume = packs_required * pack_volume
 
     requested_modes = {norm_mode(m) for m in (modes or []) if norm_mode(m)}
-    eq_rows = conn.execute("SELECT * FROM equipment_presets").fetchall()
+    eq_rows = conn.execute("SELECT * FROM equipment_presets WHERE active = 1 ORDER BY mode, equipment_code").fetchall()
     try:
         restriction_rows = conn.execute(
             "SELECT equipment_id, allowed FROM sku_equipment_rules WHERE sku_id = ?",
@@ -144,6 +148,7 @@ def plan_quick_run(
                 {
                     "mode": mode,
                     "equipment_name": eq.get("name"),
+                    "equipment_code": eq.get("equipment_code"),
                     "reason": "Disallowed by SKU conveyance restrictions",
                 }
             )
@@ -158,6 +163,7 @@ def plan_quick_run(
                 {
                     "mode": mode,
                     "equipment_name": eq.get("name"),
+                    "equipment_code": eq.get("equipment_code"),
                     "reason": str(exc),
                 }
             )
@@ -182,7 +188,7 @@ def plan_quick_run(
             shipment = RateTestInput(
                 ship_date=need_dt,
                 mode=mode,
-                equipment=str(eq.get("name") or ""),
+                equipment=norm_equipment_code(eq.get("equipment_code") or eq.get("name") or ""),
                 service_scope=(service_scope or "P2P").upper(),
                 origin_type="CITY",
                 origin_code=lane_origin_code.upper(),
@@ -196,7 +202,7 @@ def plan_quick_run(
             candidate_cards = [
                 c for c in cards
                 if norm_mode(c.get("mode")) == mode
-                and str(c.get("equipment") or "").strip().upper() == str(eq.get("name") or "").strip().upper()
+                and norm_equipment_code(c.get("equipment")) == norm_equipment_code(eq.get("equipment_code") or eq.get("name"))
                 and str(c.get("service_scope") or "").strip().upper() == shipment.service_scope
             ]
             # try exact CITY/CITY first, then PORT/PORT fallback.
@@ -218,6 +224,7 @@ def plan_quick_run(
                 rate_breakdown.setdefault(mode, []).append(
                     {
                         "equipment_name": eq.get("name"),
+                        "equipment_code": eq.get("equipment_code"),
                         "carrier": carrier_best,
                         "rate_card_id": best_card.get("id"),
                         "cost": est_cost,
@@ -231,7 +238,7 @@ def plan_quick_run(
                 if norm_mode(r.get("mode")) == mode
                 and (
                     (not r.get("equipment_name"))
-                    or str(r.get("equipment_name")).strip().upper() == str(eq.get("name") or "").strip().upper()
+                    or norm_equipment_code(r.get("equipment_name")) == norm_equipment_code(eq.get("equipment_code") or eq.get("name"))
                 )
             ]
             if matching_rates:
@@ -250,6 +257,7 @@ def plan_quick_run(
             {
                 "mode": mode,
                 "equipment_name": eq.get("name"),
+                "equipment_code": eq.get("equipment_code"),
                 "packs_per_layer": fit["packs_per_layer"],
                 "layers_allowed": fit["layers_allowed"],
                 "packs_fit": packs_fit,
@@ -291,7 +299,7 @@ def plan_quick_run(
             roll["cost_best"] = est_cost
             roll["carrier_best"] = carrier_best
 
-    equipment_results.sort(key=lambda r: (r["mode"], r["equipment_count"], r["equipment_name"] or ""))
+    equipment_results.sort(key=lambda r: (r["mode"], r["equipment_count"], r.get("equipment_code") or "", r["equipment_name"] or ""))
     mode_summary = sorted(mode_rollup.values(), key=lambda r: r["mode"])
 
     return {
@@ -309,5 +317,5 @@ def plan_quick_run(
         "equipment": equipment_results,
         "mode_summary": mode_summary,
         "rate_breakdown": rate_breakdown,
-        "excluded_equipment": sorted(excluded_equipment, key=lambda r: (r["mode"], r["equipment_name"] or "")),
+        "excluded_equipment": sorted(excluded_equipment, key=lambda r: (r["mode"], r.get("equipment_code") or "", r["equipment_name"] or "")),
     }
