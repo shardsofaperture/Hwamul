@@ -22,6 +22,7 @@ Use the left sidebar and complete this order:
 7. **Planner** tabs: run allocation, recommendations, shipment builder, and exports.
 
 The app now includes an in-app **Docs** section with setup guidance, data model, rates guide, templates, and FAQ.
+It also supports **Customs / HTS** administration for tracking HTS codes, tariff rates, section flags, and documentation requirements over time.
 
 ## Optional CSV import workflow
 - Open **Docs → Import Templates** and download generated CSV templates.

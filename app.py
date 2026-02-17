@@ -135,6 +135,7 @@ if section == "Admin":
             "Rates",
             "Carriers",
             "Rate cards",
+            "Customs / HTS",
             "Rate Test",
             "Demand entry",
             "Data management",
@@ -453,6 +454,43 @@ Example: CN + OCEAN = 35 days.""")
                 else:
                     st.error(f"Could not save rate master: {err_cards or err_charges}")
 
+    elif admin_screen == "Customs / HTS":
+        render_about(
+            "Customs / HTS",
+            "Track HTS and tariff rates for customs reporting over time, including required documentation and section flags.\n\n"
+            "Prerequisites: optional SKU linkage when a material maps to a supplier-specific SKU.\n\n"
+            "Steps: 1) Add HTS rows by effective dates. 2) Capture section 232/301 flags and documentation requirements. 3) Save.",
+        )
+        source = read_table("customs_hts_rates")
+        render_field_guide("customs_hts")
+        edited = st.data_editor(
+            source,
+            num_rows="dynamic",
+            width="stretch",
+            column_config=table_column_config("customs_hts"),
+        )
+        if st.button("Save changes", key="save_customs_hts"):
+            edited = normalize_bools(
+                edited,
+                [
+                    "section_232",
+                    "section_301",
+                    "domestic_trucking_required",
+                    "port_to_ramp_required",
+                    "special_documentation_required",
+                ],
+            )
+            errors = validate_with_specs("customs_hts", edited)
+            errors += validate_date_ranges(edited, "effective_from", "effective_to", "Customs HTS")
+            if errors:
+                st.error("; ".join(sorted(set(errors))))
+            else:
+                ok, err = save_grid("customs_hts_rates", source, edited, ["id"])
+                if ok:
+                    st.success("Customs HTS rates saved")
+                else:
+                    st.error(f"Could not save customs HTS rates: {err}")
+
     elif admin_screen == "Rate Test":
         render_about("Rate Test", "Test how a hypothetical shipment selects a rate card and computes total cost.\n\nPrerequisites: active rate cards/charges exist.\n\nSteps: fill shipment fields, run test, review selected card and line items.\n\nExample: OCEAN 40DV P2D USLAX to CNSHA.")
         cards = read_table("rate_card")
@@ -753,7 +791,7 @@ elif section == "Docs":
     st.header("In-app Docs")
     doc_page = st.sidebar.selectbox(
         "Docs page",
-        ["Quick Start", "Data Model", "Rates Guide", "Import Templates", "FAQ/Troubleshooting"],
+        ["Quick Start", "Data Model", "Rates Guide", "Customs Guide", "Import Templates", "FAQ/Troubleshooting"],
         help="Open built-in setup and operations documentation.",
     )
     if doc_page == "Quick Start":
@@ -762,10 +800,12 @@ elif section == "Docs":
         render_docs_page("data_model.md")
     elif doc_page == "Rates Guide":
         render_docs_page("rates_guide.md")
+    elif doc_page == "Customs Guide":
+        render_docs_page("customs_guide.md")
     elif doc_page == "Import Templates":
         render_docs_page("import_templates.md")
         st.subheader("Download CSV templates")
-        for table_key, fname in [("suppliers", "suppliers_template.csv"), ("skus", "skus_template.csv"), ("pack_rules", "pack_rules_template.csv"), ("lead_times", "lead_times_template.csv"), ("demand", "demand_template.csv"), ("rate_cards", "rate_cards_template.csv"), ("rate_charges", "rate_charges_template.csv")]:
+        for table_key, fname in [("suppliers", "suppliers_template.csv"), ("skus", "skus_template.csv"), ("pack_rules", "pack_rules_template.csv"), ("lead_times", "lead_times_template.csv"), ("demand", "demand_template.csv"), ("rate_cards", "rate_cards_template.csv"), ("rate_charges", "rate_charges_template.csv"), ("customs_hts", "customs_hts_template.csv")]:
             cols = list(TABLE_SPECS[table_key].keys())
             sample = {c: TABLE_SPECS[table_key][c].example for c in cols}
             csv_blob = pd.DataFrame([sample], columns=cols).to_csv(index=False).encode()
