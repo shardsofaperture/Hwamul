@@ -16,15 +16,16 @@ def test_recommend_modes_uses_rate_cards_and_truck_legs():
         {"id": 2, "is_active": 1, "mode": "TRUCK", "equipment": "53FT", "service_scope": "D2D", "origin_type": "CITY", "origin_code": "USLAX", "dest_type": "CITY", "dest_code": "PLANT1", "effective_from": "2025-01-01", "effective_to": None, "priority": 1, "base_rate": 2, "uom_pricing": "PER_MILE", "min_charge": None, "currency": "USD"},
     ]
     recs = recommend_modes(
+        sku_id=1,
         part_number="P",
         coo="CN",
         need_date=date(2026, 1, 10),
-        ordered_units=100,
+        requested_units=100,
         pack_rule=rule,
         equipment_by_mode=eq,
         rates=[],
         lead_table={("CN", "OCEAN"): 30, ("CN", "AIR"): 5, ("CN", "TRUCK"): 8},
-        part_number_lead_override={},
+        sku_lead_override={},
         rate_cards=cards,
         rate_charges=[],
         service_scope="P2D",

@@ -22,7 +22,7 @@ from db import (
     resolve_pack_rule_for_demand,
 )
 from models import Equipment, PackagingRule
-from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup
+from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
 from seed import ensure_templates, seed_if_empty
 from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
@@ -729,6 +729,8 @@ elif section == "Planner":
                 d["qty"],
                 rule,
                 [(r["tranche_name"], r["allocation_type"], float(r["allocation_value"])) for _, r in tr_input.iterrows()],
+                need_date=pd.to_datetime(d["need_date"]).date(),
+                sku_id=int(d["sku_id"]),
             )
             st.dataframe(pd.DataFrame([r.__dict__ for r in rows]), width="stretch")
 
@@ -768,29 +770,46 @@ elif section == "Planner":
 
                 eq_by_mode: dict[str, list[Equipment]] = {}
                 for mode, g in eq.groupby("mode"):
-                    eq_by_mode[mode] = [equipment_from_row(x) for x in g.to_dict("records")]
+                    eq_by_mode[norm_mode(mode)] = [equipment_from_row(x) for x in g.to_dict("records")]
 
-                lead_tbl = {(r["country_of_origin"], r["mode"]): int(r["lead_days"]) for _, r in lead.iterrows()}
-                part_number_ov = {(r["sku_id"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
+                lead_tbl = {(str(r["country_of_origin"]).strip().upper(), norm_mode(r["mode"])): int(r["lead_days"]) for _, r in lead.iterrows()}
+                sku_ov = {(int(r["sku_id"]), norm_mode(r["mode"])): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
                 phase_cfg = {r["phase"]: r for _, r in phase_defaults.iterrows()} if not phase_defaults.empty else {}
+                lanes = read_table("lanes")
+                route_info = None
+                sku_row = skus[skus["sku_id"] == d["sku_id"]].iloc[0]
+                lane_match = lanes[(lanes["origin_code"] == sku_row["supplier_code"]) & (lanes["dest_code"] == sku_row["plant_code"])] if not lanes.empty else pd.DataFrame()
+                service_scope = str(d.get("service_scope") or phase_cfg.get(str(d.get("phase") or ""), {}).get("default_service_scope") or "P2P")
+                miles = float(d.get("miles")) if pd.notna(d.get("miles")) else None
+                if not lane_match.empty:
+                    lane = lane_match.iloc[0]
+                    if not d.get("service_scope") and pd.notna(lane.get("default_service_scope")):
+                        service_scope = str(lane.get("default_service_scope"))
+                    if miles is None and pd.notna(lane.get("default_miles")):
+                        miles = float(lane.get("default_miles"))
+                    route_info = {"supplier_code": sku_row["supplier_code"], "plant_code": sku_row["plant_code"]}
+
+                manual_input = int(st.number_input("Manual lead override", min_value=0, value=int(d.get("manual_lead_override", 0) or 0), help="Optional extra lead days >=0. Example: 3"))
                 recs = recommend_modes(
-                    part_number=str(d["sku_id"]),
+                    sku_id=int(d["sku_id"]),
+                    part_number=str(sku_row["part_number"]),
                     coo=coo,
                     need_date=need_date,
-                    ordered_units=d["qty"],
+                    requested_units=d["qty"],
                     pack_rule=rule,
                     equipment_by_mode=eq_by_mode,
                     rates=rates.to_dict("records"),
                     lead_table=lead_tbl,
-                    part_number_lead_override=part_number_ov,
-                    manual_lead_override=int(st.number_input("Manual lead override", min_value=0, value=int(d.get("manual_lead_override", 0) or 0), help="Optional extra lead days >=0. Example: 3")),
+                    sku_lead_override=sku_ov,
+                    manual_lead_override=(manual_input if manual_input > 0 else None),
                     phase=str(d.get("phase") or ""),
                     phase_defaults=phase_cfg,
                     rate_cards=rate_cards.to_dict("records") if not rate_cards.empty else [],
                     rate_charges=rate_charges.to_dict("records") if not rate_charges.empty else [],
-                    service_scope=str(d.get("service_scope") or phase_cfg.get(str(d.get("phase") or ""), {}).get("default_service_scope") or "P2P"),
-                    mode_override=(str(d.get("mode_override")) if pd.notna(d.get("mode_override")) else None),
-                    miles=float(d.get("miles")) if pd.notna(d.get("miles")) else None,
+                    service_scope=service_scope,
+                    mode_override=(norm_mode(str(d.get("mode_override"))) if pd.notna(d.get("mode_override")) else None),
+                    route_info=route_info,
+                    miles=miles,
                 )
                 st.dataframe(pd.DataFrame(recs), width="stretch")
                 if recs and recs[0].get("cost_items"):
@@ -815,7 +834,7 @@ elif section == "Planner":
         )
         eq = read_table("equipment_presets")
         if not eq.empty:
-            eq_map = {mode: equipment_from_row(group.iloc[0].to_dict()) for mode, group in eq.groupby("mode")}
+            eq_map = {norm_mode(mode): equipment_from_row(group.iloc[0].to_dict()) for mode, group in eq.groupby("mode")}
             shipments = build_shipments(demo.to_dict("records"), eq_map)
             st.dataframe(pd.DataFrame(shipments), width="stretch")
 
