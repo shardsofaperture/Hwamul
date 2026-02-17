@@ -1,98 +1,41 @@
 # Hwamul Logistics Planner
 
-Local planning app for logistics mode selection + cube-out.
+Local Streamlit app for supplier-specific logistics planning, rate management, and shipment recommendation.
 
-## Tech Stack
-- Python 3.11+
-- Streamlit UI
-- SQLite storage (`planner.db` in dev, `%APPDATA%\ProductionPlanner\planner.db` in packaged Windows app)
-- Dataclass-based strongly typed domain models
-
-## Setup
+## Run locally
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-```
-
-## Run (development)
-```bash
 streamlit run app.py
 ```
 
-## Windows desktop launcher
-`launcher.py` starts Streamlit on a dynamically selected localhost port and opens the app inside a native desktop window using `pywebview` (Edge WebView2).
+## Quick Start (in-app configuration from scratch)
+Use the left sidebar and complete this order:
 
-Behavior:
-- Picks a free `127.0.0.1` TCP port and retries to avoid conflicts.
-- Starts Streamlit bound to `127.0.0.1` only (no external browser launch).
-- Opens a desktop window pointed at `http://127.0.0.1:<port>`.
-- Stores SQLite at `%APPDATA%\ProductionPlanner\planner.db` (creates folder if missing).
-- Stops Streamlit when the desktop window closes.
+1. **Admin → Suppliers**: create supplier codes/names.
+2. **Admin → SKUs**: create supplier-specific SKUs (`part_number + supplier_id`).
+3. **Admin → Pack rules**: add pack rules per SKU, with one default rule.
+4. **Admin → Lead times**: maintain COO+mode lead days and optional SKU overrides.
+5. **Admin → Carriers** then **Admin → Rate cards**: define rate cards and charges.
+6. **Admin → Demand entry**: enter demand rows (`sku_id`, `need_date`, `qty`) or import CSV.
+7. **Planner** tabs: run allocation, recommendations, shipment builder, and exports.
 
-Run launcher directly on Windows:
-```bash
-python launcher.py
-```
+The app now includes an in-app **Docs** section with setup guidance, data model, rates guide, templates, and FAQ.
 
-## What the app includes
-1. **Equipment presets** (53ft trailer, 40/20 dry, 40/20 reefer, Air) with editable dimensions, payload, and volumetric factor.
-2. **Lead times** by `(country_of_origin, mode)` plus part_number-mode overrides and manual recommendation override.
-3. **Rates configuration** for ocean/truck/air pricing models and fixed/surcharge fields.
-4. **Master data** for part numbers and packaging rules.
-5. **CSV import** for demand/BOM data.
-6. **Allocation** with tranche split, pack rounding (MOQ/increments), and excess carry-forward.
-7. **Recommendations** with ship-by date, feasibility, cost, utilization, and ranking.
-8. **Shipment builder** for mode consolidation and equipment/cube estimate.
-9. **Exports** for `shipment_plan.csv`, `booking_summary.csv`, and `excess_report.csv`.
+## Optional CSV import workflow
+- Open **Docs → Import Templates** and download generated CSV templates.
+- Fill template rows using examples/field guides.
+- Upload in the matching admin area (demand CSV import is built-in; other templates are for guided bulk prep).
 
-## CSV formats
-Templates are generated in `templates/` at startup.
+## Windows packaging notes
+This repo includes Windows desktop packaging via `launcher.py` + `ProductionPlanner.spec`.
 
-### demand_template.csv
-Columns:
-- `part_number` (string)
-- `need_date` (YYYY-MM-DD)
-- `qty` (number, base UOM)
-- `coo_override` (optional string)
-- `priority` (optional string)
-- `notes` (optional string)
-
-### bom_template.csv
-Columns:
-- `part_number`
-- `need_date`
-- `qty`
-
-## Tests
-```bash
-pytest
-```
-
-Tests cover:
-- pack rounding logic
-- air chargeable weight logic
-- equipment/container count estimate
-
-## Notes
-- Schema migrations run at app startup.
-- Seed data is automatically loaded if tables are empty.
-- All persistence is local-only in SQLite.
-
-
-## Build single-file Windows EXE (PyInstaller)
-Install Windows deps:
+Build:
 ```bash
 pip install -r requirements-win.txt
-```
-
-Build from repo root:
-```bash
 pyinstaller --clean --noconfirm ProductionPlanner.spec
 ```
-
-Output executable:
-- `dist/ProductionPlanner.exe`
 
 Run packaged app:
 ```bash
@@ -100,5 +43,10 @@ Run packaged app:
 ```
 
 Notes:
-- Requires Edge WebView2 runtime on Windows.
-- The spec includes `launcher.py` as entrypoint plus Streamlit app modules and `templates/` assets.
+- SQLite path in packaged app: `%APPDATA%\ProductionPlanner\planner.db`.
+- Requires Edge WebView2 runtime.
+
+## Tests
+```bash
+pytest
+```

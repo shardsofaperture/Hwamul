@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from field_specs import validate_table_rows
+
 
 def require_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
     missing = []
@@ -34,3 +36,7 @@ def validate_dates(df: pd.DataFrame, cols: list[str]) -> list[str]:
         if parsed.isna().any() and series.notna().any():
             errors.append(f"{col} has invalid dates")
     return errors
+
+
+def validate_with_specs(table_key: str, df: pd.DataFrame) -> list[str]:
+    return validate_table_rows(table_key, df)
