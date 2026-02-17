@@ -8,6 +8,7 @@ from db import (
     delete_rows,
     export_data_bundle,
     import_data_bundle,
+    normalize_pack_dimension_to_meters,
     purge_demand_before,
     run_migrations,
     upsert_rows,
@@ -278,6 +279,31 @@ def test_packaging_rules_crud_with_pack_name_key(tmp_path):
         (sku_id,),
     ).fetchone()[0]
     assert updated_units == 24
+
+
+def test_pack_rules_admin_dimension_normalization_matches_downstream_cube():
+    from models import PackagingRule
+
+    cm_rule = PackagingRule(
+        part_number="PN-CM",
+        units_per_pack=1,
+        kg_per_unit=1,
+        pack_tare_kg=0,
+        dim_l_m=normalize_pack_dimension_to_meters(120),
+        dim_w_m=normalize_pack_dimension_to_meters(80),
+        dim_h_m=normalize_pack_dimension_to_meters(90),
+    )
+    m_rule = PackagingRule(
+        part_number="PN-M",
+        units_per_pack=1,
+        kg_per_unit=1,
+        pack_tare_kg=0,
+        dim_l_m=normalize_pack_dimension_to_meters(1.2),
+        dim_w_m=normalize_pack_dimension_to_meters(0.8),
+        dim_h_m=normalize_pack_dimension_to_meters(0.9),
+    )
+
+    assert cm_rule.pack_cube_m3 == m_rule.pack_cube_m3
 
 
 def test_single_default_pack_rule_per_sku_enforced(tmp_path):

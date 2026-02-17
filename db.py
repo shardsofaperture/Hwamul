@@ -1057,6 +1057,18 @@ def resolve_pack_rule_for_demand(conn: sqlite3.Connection, demand_line: sqlite3.
     return select_default_pack_rule(conn, int(demand_line["sku_id"]))
 
 
+def normalize_pack_dimension_to_meters(value: float | int | None) -> float | None:
+    """Normalize a pack dimension input to meters.
+
+    The admin UI primarily accepts centimeters, but legacy meter entries are
+    still supported. Values greater than 3 are interpreted as centimeters.
+    """
+    if value is None or pd.isna(value):
+        return None
+    dim = float(value)
+    return dim / 100.0 if dim > 3 else dim
+
+
 def map_import_demand_rows(
     import_frame: pd.DataFrame,
     sku_catalog: pd.DataFrame,
