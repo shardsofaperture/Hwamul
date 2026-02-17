@@ -173,6 +173,21 @@ def packs_per_equipment(pack_rule: Any, equipment: Any) -> dict:
     }
 
 
+
+def packs_fit(pack_rule: Any, equipment: Any, stacking_policy: bool = True) -> dict:
+    """Compatibility wrapper for BOM planner fit semantics."""
+    fit = packs_per_equipment(pack_rule, equipment)
+    if stacking_policy:
+        return fit
+    fit = dict(fit)
+    per_layer = int(fit["packs_per_layer"])
+    by_weight = int(fit["by_weight"])
+    fit["layers_allowed"] = 1
+    fit["by_grid"] = per_layer
+    fit["packs_fit"] = max(0, min(per_layer, by_weight))
+    fit["limiting_constraint"] = "FLOOR_OR_HEIGHT" if per_layer < by_weight else "PAYLOAD"
+    return fit
+
 def equipment_count_for_packs(packs_required: int, packs_fit: int) -> int:
     if packs_fit <= 0:
         return 0
