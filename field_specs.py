@@ -37,6 +37,9 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "supplier_id": FieldSpec("int", required=True, min_value=1, description="Supplier foreign key", example="1"),
         "supplier_duns": FieldSpec("text", max_length=13, regex=r"^[0-9-]{9,13}$", allowed_chars="0-9 and -", description="Supplier DUNS number", example="123456789"),
         "description": FieldSpec("text", max_length=200, description="SKU description", example="40DV container"),
+        "source_location": FieldSpec("text", max_length=120, description="Supplier/source location code or name", example="CNSHA"),
+        "incoterm": FieldSpec("text", max_length=3, regex=r"^[A-Z]{3}$", allowed_chars="A-Z", description="Default Incoterm", example="FOB"),
+        "uom": FieldSpec("text", max_length=16, regex=r"^[A-Z]{1,16}$", allowed_chars="A-Z", description="Order unit of measure", example="KG"),
         "default_coo": FieldSpec("text", required=True, max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Default country of origin ISO-2", example="CN"),
     },
     "pack_rules": {

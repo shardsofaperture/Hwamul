@@ -574,3 +574,40 @@ def test_migration_v11_adds_supplier_sku_and_customs_reference_fields(tmp_path):
     assert "plant_code" in sku_cols
     assert "supplier_duns" in sku_cols
     assert "ship_from_country" in customs_cols
+
+
+def test_migration_v13_adds_sku_logistics_profile_fields(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    conn = sqlite3.connect(db.DB_PATH)
+    with conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        for version in range(1, 13):
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+
+        conn.execute(
+            """
+            CREATE TABLE sku_master (
+                sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                part_number TEXT NOT NULL,
+                supplier_id INTEGER NOT NULL,
+                description TEXT,
+                default_coo TEXT NOT NULL,
+                UNIQUE(part_number, supplier_id)
+            )
+            """
+        )
+
+    db.run_migrations()
+    migrated = db.get_conn()
+    sku_cols = [r[1] for r in migrated.execute("PRAGMA table_info(sku_master)").fetchall()]
+
+    assert "source_location" in sku_cols
+    assert "incoterm" in sku_cols
+    assert "uom" in sku_cols

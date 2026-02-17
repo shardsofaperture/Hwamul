@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import sqlite3
+from math import ceil
 from datetime import date
 from pathlib import Path
 
@@ -55,6 +56,9 @@ def read_sku_catalog() -> pd.DataFrame:
             sm.plant_code,
             sm.supplier_duns,
             sm.description,
+            sm.source_location,
+            sm.incoterm,
+            sm.uom,
             sm.default_coo,
             sm.part_number || ' [' || s.supplier_code || ' @ ' || sm.plant_code || ']' AS sku_label
         FROM sku_master sm
@@ -207,7 +211,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         source = read_sku_catalog()
         q = st.text_input("Search SKU or description", help="Filter rows by part number, supplier code/name, or description. Example: PN_10001")
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
-        render_about("SKUs", "Define supplier-and-plant specific SKU records.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number, plant_code, COO, and optional DUNS. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + plant_code US_TX_DAL + COO CN + supplier_duns 123456789.")
+        render_about("SKUs", "Define supplier-and-plant specific SKU records with logistics profile defaults.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number, plant_code, COO, source location, Incoterm, UOM, and optional DUNS. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + plant_code US_TX_DAL + source_location CNSHA + incoterm FOB + uom KG + COO CN + supplier_duns 123456789.")
         render_field_guide("skus")
         edited = st.data_editor(
             filtered_source,
@@ -727,7 +731,7 @@ Example: CN + OCEAN = 35 days.""")
             st.success("Database compacted")
 
 elif section == "Planner":
-    alloc_tab, rec_tab, ship_tab, exp_tab = st.tabs(["Allocation", "Recommendations", "Shipment Builder", "Export"])
+    alloc_tab, rec_tab, cube_tab, ship_tab, exp_tab = st.tabs(["Allocation", "Recommendations", "Cube Out", "Shipment Builder", "Export"])
 
     with alloc_tab:
         render_about("Allocation", "Preview tranche allocation for one demand line using selected pack rule.\n\nPrerequisites: demand lines + pack rules exist.\n\nSteps: pick demand line, optional override, edit tranches, review result.\n\nExample: T1 60%, T2 40%.")
@@ -853,6 +857,86 @@ elif section == "Planner":
                 if recs and recs[0].get("cost_items"):
                     with st.expander("Selected recommendation cost detail", expanded=False):
                         st.dataframe(pd.DataFrame(recs[0]["cost_items"]), width="stretch")
+
+
+    with cube_tab:
+        render_about("Cube Out", "Select multiple SKUs and calculate how many equipment units are required based on each SKU default pack rule. Enter required quantity in the SKU UOM (KG/METER/GALLON/EA/etc.).")
+        skus = read_sku_catalog()
+        packs = read_table("packaging_rules")
+        eq = read_table("equipment_presets")
+
+        if skus.empty or packs.empty or eq.empty:
+            st.info("Need SKUs, packaging rules, and equipment presets before running cube-out.")
+        else:
+            sku_options = skus.copy()
+            sku_options["cube_label"] = (
+                sku_options["part_number"]
+                + " | SUP:" + sku_options["supplier_code"]
+                + " | PLANT:" + sku_options["plant_code"].fillna("")
+                + " | UOM:" + sku_options["uom"].fillna("EA")
+            )
+            selected_ids = st.multiselect(
+                "Select SKUs",
+                options=sku_options["sku_id"].tolist(),
+                format_func=lambda sid: sku_options.loc[sku_options["sku_id"] == sid, "cube_label"].iloc[0],
+                help="Choose one or more part numbers to cube out together.",
+            )
+            if not selected_ids:
+                st.info("Select one or more SKUs to begin cube-out.")
+            else:
+                defaults = packs[packs["is_default"] == 1][["sku_id", "pack_name", "units_per_pack", "kg_per_unit", "pack_tare_kg", "dim_l_m", "dim_w_m", "dim_h_m"]]
+                calc_rows = skus[skus["sku_id"].isin(selected_ids)][["sku_id", "part_number", "supplier_code", "plant_code", "uom"]].merge(defaults, on="sku_id", how="left")
+                calc_rows["qty_required"] = 0.0
+                calc_rows["uom"] = calc_rows["uom"].replace("", pd.NA).fillna("EA")
+
+                edited = st.data_editor(
+                    calc_rows[["sku_id", "part_number", "supplier_code", "plant_code", "uom", "pack_name", "units_per_pack", "kg_per_unit", "dim_l_m", "dim_w_m", "dim_h_m", "qty_required"]],
+                    width="stretch",
+                    num_rows="fixed",
+                    disabled=["sku_id", "part_number", "supplier_code", "plant_code", "uom", "pack_name", "units_per_pack", "kg_per_unit", "dim_l_m", "dim_w_m", "dim_h_m"],
+                    column_config={"qty_required": st.column_config.NumberColumn("qty_required", min_value=0.0, help="Required amount in this SKU UOM")},
+                )
+
+                results: list[dict] = []
+                for _, row in edited.iterrows():
+                    qty_required = float(row.get("qty_required") or 0)
+                    units_per_pack = float(row.get("units_per_pack") or 0)
+                    if qty_required <= 0 or units_per_pack <= 0:
+                        continue
+
+                    packs_needed = int(ceil(qty_required / units_per_pack))
+                    gross_pack_weight = (units_per_pack * float(row.get("kg_per_unit") or 0)) + float(row.get("pack_tare_kg") or 0)
+                    pack_cube = float(row.get("dim_l_m") or 0) * float(row.get("dim_w_m") or 0) * float(row.get("dim_h_m") or 0)
+                    total_weight_kg = packs_needed * gross_pack_weight
+                    total_volume_m3 = packs_needed * pack_cube
+
+                    for _, eq_row in eq.iterrows():
+                        eq_obj = equipment_from_row(eq_row.to_dict())
+                        by_cube = ceil(total_volume_m3 / eq_obj.volume_m3) if eq_obj.volume_m3 > 0 else 0
+                        by_payload = ceil(total_weight_kg / eq_obj.max_payload_kg) if eq_obj.max_payload_kg > 0 else 0
+                        equipment_needed = max(1, by_cube, by_payload) if (by_cube or by_payload) else 0
+                        if equipment_needed == 0:
+                            continue
+                        results.append({
+                            "sku_id": int(row["sku_id"]),
+                            "part_number": row["part_number"],
+                            "uom": row["uom"],
+                            "qty_required": qty_required,
+                            "packs_needed": packs_needed,
+                            "total_weight_kg": round(total_weight_kg, 3),
+                            "total_volume_m3": round(total_volume_m3, 3),
+                            "mode": eq_obj.mode,
+                            "equipment": eq_obj.name,
+                            "equipment_needed": equipment_needed,
+                        })
+
+                if results:
+                    out = pd.DataFrame(results)
+                    st.dataframe(out, width="stretch")
+                    st.download_button("Download cube-out results", data=out.to_csv(index=False).encode(), file_name="cube_out_results.csv", mime="text/csv")
+                else:
+                    st.info("Enter qty_required > 0 for at least one SKU with a default pack rule.")
+
 
     with ship_tab:
         render_about("Shipment Builder", "Simulate greedy consolidation into equipment presets.\n\nPrerequisites: equipment presets exist.\n\nSteps: edit demo rows, run auto calculation, inspect shipment output.\n\nExample: two OCEAN rows combine when capacity allows.")

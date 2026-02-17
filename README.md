@@ -3,7 +3,7 @@
 Local-first Streamlit application for supplier-specific logistics planning, rate management, shipment recommendation, and customs tracking.
 
 ## What this app helps you do
-- Maintain supplier-specific SKU masters and packaging rules.
+- Maintain supplier-specific SKU masters (location, Incoterms, UOM) and packaging rules.
 - Plan inbound demand by lead time + rate assumptions.
 - Build shipment recommendations and simple consolidation previews.
 - Manage carriers, rate cards, and charge structures.
@@ -24,7 +24,7 @@ Use the sidebar in this order for a clean initial setup:
 1. **Admin → Suppliers**
    - Add each supplier using `supplier_code` + `supplier_name`.
 2. **Admin → SKUs**
-   - Add supplier-specific SKUs (`part_number + supplier_id`).
+   - Add supplier-specific SKUs (`part_number + supplier_id`) and logistics defaults (`source_location`, `incoterm`, `uom`).
 3. **Admin → Pack rules**
    - Add at least one default packing rule for each SKU.
 4. **Admin → Lead times**
@@ -38,7 +38,7 @@ Use the sidebar in this order for a clean initial setup:
 8. **Admin → Demand entry**
    - Enter rows manually or import demand CSV.
 9. **Planner tabs**
-   - Run allocation, recommendations, shipment building, and exports.
+   - Run allocation, recommendations, cube-out calculations, shipment building, and exports.
 
 ## Built-in docs map
 Open **Docs** in-app for operator guidance:
