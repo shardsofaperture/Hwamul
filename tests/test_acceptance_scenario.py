@@ -19,6 +19,10 @@ def test_acceptance_scenario_outputs_exist_and_are_populated():
     }
 
     assert shipment_plan
+    phase_modes = {row["phase"]: row["default_mode"] for row in shipment_plan}
+    assert phase_modes["trial1"] == "AIR"
+    assert phase_modes["trial2"] == "AIR"
+    assert phase_modes["SOP"] == "OCEAN"
     sample = shipment_plan[0]
     assert "default_mode" in sample
     assert "intl_scope" in sample

@@ -756,6 +756,45 @@ def _migration_11_supplier_plant_and_customs_ship_from(conn: sqlite3.Connection)
 MIGRATIONS.append((11, _migration_11_supplier_plant_and_customs_ship_from))
 
 
+def _migration_12_phase_and_lane_defaults(conn: sqlite3.Connection) -> None:
+    demand_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='demand_lines'"
+    ).fetchone()
+    if demand_exists:
+        demand_cols = {row[1] for row in conn.execute("PRAGMA table_info(demand_lines)").fetchall()}
+        if "phase" not in demand_cols:
+            conn.execute("ALTER TABLE demand_lines ADD COLUMN phase TEXT DEFAULT ''")
+        if "mode_override" not in demand_cols:
+            conn.execute("ALTER TABLE demand_lines ADD COLUMN mode_override TEXT")
+        if "service_scope" not in demand_cols:
+            conn.execute("ALTER TABLE demand_lines ADD COLUMN service_scope TEXT")
+        if "miles" not in demand_cols:
+            conn.execute("ALTER TABLE demand_lines ADD COLUMN miles REAL")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS phase_defaults (
+            phase TEXT PRIMARY KEY,
+            default_mode TEXT,
+            default_service_scope TEXT,
+            manual_lead_override INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS lanes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_code TEXT NOT NULL,
+            dest_code TEXT NOT NULL,
+            default_service_scope TEXT,
+            default_miles REAL,
+            UNIQUE(origin_code, dest_code)
+        );
+        """
+    )
+
+
+MIGRATIONS.append((12, _migration_12_phase_and_lane_defaults))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -865,6 +904,8 @@ EXPORT_TABLE_ORDER = [
     "rate_card",
     "rate_charge",
     "customs_hts_rates",
+    "phase_defaults",
+    "lanes",
     "demand_lines",
     "tranche_allocations",
 ]
@@ -881,6 +922,8 @@ TABLE_KEY_COLS: dict[str, list[str]] = {
     "rate_card": ["mode", "service_scope", "equipment", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "effective_to", "carrier_id"],
     "rate_charge": ["rate_card_id", "charge_code", "charge_name", "calc_method", "effective_from", "effective_to"],
     "customs_hts_rates": ["hts_code", "country_of_origin", "tariff_program", "effective_from"],
+    "phase_defaults": ["phase"],
+    "lanes": ["origin_code", "dest_code"],
     "demand_lines": ["sku_id", "need_date", "qty", "notes"],
     "tranche_allocations": ["demand_line_id", "tranche_name", "allocation_type"],
 }

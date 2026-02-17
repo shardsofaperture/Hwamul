@@ -65,6 +65,10 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "qty": FieldSpec("decimal", required=True, min_value=0, description="Requested quantity", example="1200", notes="Drives allocation and shipments."),
         "coo_override": FieldSpec("text", max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="Optional COO override", example="VN"),
         "priority": FieldSpec("text", max_length=20, description="Planning priority label", example="HIGH"),
+        "phase": FieldSpec("text", max_length=32, choices=["Trial1", "Trial2", "Sample", "Speed-up", "Validation", "SOP"], description="Production phase", example="Trial1"),
+        "mode_override": FieldSpec("text", max_length=24, description="Optional mode override", example="AIR"),
+        "service_scope": FieldSpec("text", max_length=8, choices=["P2P", "P2D", "D2P", "D2D"], description="Service scope override", example="D2D"),
+        "miles": FieldSpec("decimal", min_value=0, description="Optional trucking miles override", example="320"),
     },
     "equipment": {
         "name": FieldSpec("text", required=True, max_length=40, description="Preset name", example="40DV"),
