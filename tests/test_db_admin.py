@@ -163,3 +163,117 @@ def test_migration_v6_moves_part_number_tables_to_sku_id(tmp_path):
     assert migrated.execute("SELECT COUNT(*) FROM packaging_rules WHERE sku_id=?", (row[0],)).fetchone()[0] == 1
     assert migrated.execute("SELECT COUNT(*) FROM demand_lines WHERE sku_id=?", (row[0],)).fetchone()[0] == 1
     assert migrated.execute("SELECT COUNT(*) FROM lead_time_overrides WHERE sku_id=?", (row[0],)).fetchone()[0] == 1
+
+
+def test_migration_v7_backfills_packaging_rules_sku_id_from_part_number(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    conn = sqlite3.connect(db.DB_PATH)
+    with conn:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        for version in range(1, 7):
+            conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+
+        conn.execute(
+            """
+            CREATE TABLE sku_master (
+                sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                part_number TEXT NOT NULL,
+                supplier_id INTEGER NOT NULL,
+                description TEXT,
+                default_coo TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE packaging_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                part_number TEXT NOT NULL,
+                pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+                is_default INTEGER NOT NULL DEFAULT 1,
+                units_per_pack REAL NOT NULL,
+                kg_per_unit REAL NOT NULL,
+                pack_tare_kg REAL NOT NULL,
+                pack_length_m REAL NOT NULL,
+                pack_width_m REAL NOT NULL,
+                pack_height_m REAL NOT NULL,
+                min_order_packs INTEGER NOT NULL DEFAULT 1,
+                increment_packs INTEGER NOT NULL DEFAULT 1,
+                stackable INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(part_number, pack_type)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('LEGACY-2', 1, 'Legacy 2', 'KR')"
+        )
+        conn.execute(
+            """
+            INSERT INTO packaging_rules(part_number, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m)
+            VALUES ('LEGACY-2', 'CASE', 1, 12, 1.2, 0.6, 0.3, 0.2, 0.1)
+            """
+        )
+
+    db.run_migrations()
+    migrated = db.get_conn()
+    cols = [r[1] for r in migrated.execute("PRAGMA table_info(packaging_rules)").fetchall()]
+    assert "sku_id" in cols
+    assert "part_number" not in cols
+    assert migrated.execute("SELECT COUNT(*) FROM packaging_rules WHERE sku_id IS NOT NULL").fetchone()[0] == 1
+    idx = [r[1] for r in migrated.execute("PRAGMA index_list('packaging_rules')").fetchall()]
+    assert "idx_packaging_rules_sku_id" in idx
+
+
+def test_packaging_rules_crud_with_composite_key(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    conn = db.get_conn()
+
+    with conn:
+        conn.execute("INSERT INTO suppliers(supplier_code, supplier_name) VALUES ('S2', 'Supplier 2')")
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='S2'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('PN-C', ?, 'Composite', 'US')",
+            (supplier_id,),
+        )
+        sku_id = conn.execute(
+            "SELECT sku_id FROM sku_master WHERE part_number='PN-C' AND supplier_id=?",
+            (supplier_id,),
+        ).fetchone()[0]
+
+    seed = pd.DataFrame(
+        [
+            {
+                "sku_id": sku_id,
+                "pack_type": "CASE",
+                "is_default": 1,
+                "units_per_pack": 10,
+                "kg_per_unit": 1.0,
+                "pack_tare_kg": 0.5,
+                "pack_length_m": 0.2,
+                "pack_width_m": 0.2,
+                "pack_height_m": 0.2,
+                "min_order_packs": 1,
+                "increment_packs": 1,
+                "stackable": 1,
+            }
+        ]
+    )
+    upsert_rows(conn, "packaging_rules", seed, ["sku_id", "pack_type"])
+
+    changed = seed.copy()
+    changed.loc[0, "units_per_pack"] = 24
+    upsert_rows(conn, "packaging_rules", changed, ["sku_id", "pack_type"])
+
+    updated_units = conn.execute(
+        "SELECT units_per_pack FROM packaging_rules WHERE sku_id=? AND pack_type='CASE'",
+        (sku_id,),
+    ).fetchone()[0]
+    assert updated_units == 24

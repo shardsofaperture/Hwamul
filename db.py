@@ -9,7 +9,7 @@ import json
 import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -20,7 +20,7 @@ else:
     DB_PATH = (Path(__file__).resolve().parent / "planner.db").resolve()
 
 
-MIGRATIONS: list[tuple[int, str]] = [
+MIGRATIONS: list[tuple[int, str | Callable[[sqlite3.Connection], None]]] = [
     (
         1,
         """
@@ -498,6 +498,100 @@ MIGRATIONS: list[tuple[int, str]] = [
 ]
 
 
+def _migration_7_packaging_rules_to_sku_fk(conn: sqlite3.Connection) -> None:
+    """Normalize packaging_rules to mandatory sku_id and add lookup index.
+
+    Handles legacy databases that still have a part_number column by backfilling
+    sku_id from sku_master(part_number).
+    """
+
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='packaging_rules'"
+    ).fetchone()
+    if not table_exists:
+        return
+
+    cols = {
+        row[1]: row
+        for row in conn.execute("PRAGMA table_info(packaging_rules)").fetchall()
+    }
+    has_part_number = "part_number" in cols
+    has_sku_id = "sku_id" in cols
+
+    conn.execute("PRAGMA foreign_keys=OFF;")
+    try:
+        if has_part_number and not has_sku_id:
+            conn.execute("ALTER TABLE packaging_rules ADD COLUMN sku_id INTEGER")
+            has_sku_id = True
+
+        if has_part_number and has_sku_id:
+            conn.execute(
+                """
+                UPDATE packaging_rules
+                SET sku_id = (
+                    SELECT sm.sku_id
+                    FROM sku_master sm
+                    WHERE sm.part_number = packaging_rules.part_number
+                    ORDER BY sm.sku_id
+                    LIMIT 1
+                )
+                WHERE sku_id IS NULL
+                """
+            )
+
+        if has_sku_id:
+            missing = conn.execute(
+                "SELECT COUNT(*) FROM packaging_rules WHERE sku_id IS NULL"
+            ).fetchone()[0]
+            if missing:
+                raise sqlite3.IntegrityError("packaging_rules contains rows without resolvable sku_id")
+
+            conn.executescript(
+                """
+                ALTER TABLE packaging_rules RENAME TO packaging_rules_old;
+                CREATE TABLE packaging_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sku_id INTEGER NOT NULL,
+                    pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+                    is_default INTEGER NOT NULL DEFAULT 1,
+                    units_per_pack REAL NOT NULL,
+                    kg_per_unit REAL NOT NULL,
+                    pack_tare_kg REAL NOT NULL,
+                    pack_length_m REAL NOT NULL,
+                    pack_width_m REAL NOT NULL,
+                    pack_height_m REAL NOT NULL,
+                    min_order_packs INTEGER NOT NULL DEFAULT 1,
+                    increment_packs INTEGER NOT NULL DEFAULT 1,
+                    stackable INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(sku_id, pack_type),
+                    FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO packaging_rules (
+                    id, sku_id, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                    pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable
+                )
+                SELECT
+                    id, sku_id, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                    pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable
+                FROM packaging_rules_old
+                """
+            )
+            conn.execute("DROP TABLE packaging_rules_old")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_packaging_rules_sku_id ON packaging_rules(sku_id)"
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON;")
+
+
+MIGRATIONS.append((7, _migration_7_packaging_rules_to_sku_fk))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -527,7 +621,10 @@ def run_migrations() -> None:
         for version, script in MIGRATIONS:
             if version in applied:
                 continue
-            _exec_script(conn, script)
+            if callable(script):
+                script(conn)
+            else:
+                _exec_script(conn, script)
             conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
 
 

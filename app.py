@@ -167,6 +167,33 @@ if section == "Admin":
                     st.error(f"Could not save SKUs: {err}. If changing existing SKU codes, update dependent pack and demand rows first.")
 
     elif admin_screen == "Pack rules":
+        sku_catalog = read_sku_catalog()
+        if sku_catalog.empty:
+            st.warning("No SKUs found. Create a SKU first.")
+            st.info("Optional: go to Admin → SKUs to create a new SKU.")
+            st.stop()
+
+        sku_catalog = sku_catalog.copy()
+        sku_catalog["select_label"] = sku_catalog["part_number"] + " — " + sku_catalog["description"].fillna("")
+        sku_options = sku_catalog["sku_id"].tolist()
+        default_sku = st.session_state.get("selected_sku_id")
+        if default_sku not in sku_options:
+            default_sku = sku_options[0]
+
+        selected_sku_id = st.selectbox(
+            "Select SKU",
+            options=sku_options,
+            index=sku_options.index(default_sku),
+            format_func=lambda sid: sku_catalog.loc[sku_catalog["sku_id"] == sid, "select_label"].iloc[0],
+            key="selected_sku_id",
+        )
+
+        selected_sku = sku_catalog[sku_catalog["sku_id"] == selected_sku_id].iloc[0]
+        col1, col2, col3 = st.columns(3)
+        col1.text_input("Part Number", value=str(selected_sku["part_number"]), disabled=True)
+        col2.text_input("Description", value=str(selected_sku["description"] or ""), disabled=True)
+        col3.text_input("Default COO", value=str(selected_sku["default_coo"]), disabled=True)
+
         source = pd.read_sql_query("""
             SELECT pr.*, sm.part_number, s.supplier_code, sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
             FROM packaging_rules pr
@@ -174,8 +201,27 @@ if section == "Admin":
             JOIN suppliers s ON s.supplier_id = sm.supplier_id
             ORDER BY sm.part_number, s.supplier_code, pr.pack_type
             """, get_conn())
-        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        filtered = source[source["sku_id"] == selected_sku_id].copy()
+        edited = st.data_editor(
+            filtered.drop(columns=["part_number", "supplier_code", "sku_label"], errors="ignore"),
+            num_rows="dynamic",
+            width="stretch",
+            key="pack_rules_editor",
+        )
+
+        if not edited.empty:
+            edited["sku_id"] = selected_sku_id
+
         if st.button("Save changes", key="save_pack"):
+            if not st.session_state.get("selected_sku_id"):
+                st.error("Select a SKU before saving pack rules")
+                st.stop()
+
+            existing = set(read_table("sku_master")["sku_id"].tolist())
+            if not edited["sku_id"].isin(existing).all():
+                st.error("Pack rules reference a nonexistent sku_id")
+                st.stop()
+
             errors = require_cols(edited, ["sku_id", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
             defaults = edited.groupby("sku_id")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
             if not defaults.empty and (defaults < 1).any():
@@ -183,9 +229,10 @@ if section == "Admin":
             if errors:
                 st.error("; ".join(errors))
             else:
-                ok, err = save_grid("packaging_rules", source, edited, ["id"])
+                ok, err = save_grid("packaging_rules", filtered.drop(columns=["part_number", "supplier_code", "sku_label"], errors="ignore"), edited, ["sku_id", "pack_type"])
                 if ok:
                     st.success("Pack rules saved")
+                    st.rerun()
                 else:
                     st.error(f"Could not save pack rules: {err}")
 
