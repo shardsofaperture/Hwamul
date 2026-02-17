@@ -20,6 +20,7 @@ from db import (
     vacuum_db,
     map_import_demand_rows,
     resolve_pack_rule_for_demand,
+    normalize_pack_dimension_to_meters,
 )
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
@@ -283,9 +284,9 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
                 units_per_pack,
                 kg_per_unit,
                 pack_tare_kg,
-                dim_l_m AS dim_l_cm,
-                dim_w_m AS dim_w_cm,
-                dim_h_m AS dim_h_cm,
+                dim_l_m * 100.0 AS dim_l_cm,
+                dim_w_m * 100.0 AS dim_w_cm,
+                dim_h_m * 100.0 AS dim_h_cm,
                 min_order_packs,
                 increment_packs,
                 stackable,
@@ -375,6 +376,9 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             else:
                 original_for_save = pack_source.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
                 edited_for_save = edited.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
+                for dim_col in ["dim_l_m", "dim_w_m", "dim_h_m"]:
+                    original_for_save[dim_col] = original_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
+                    edited_for_save[dim_col] = edited_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
                 ok, err = save_grid("packaging_rules", original_for_save, edited_for_save, ["id"])
                 if ok:
                     st.success("Pack rules saved")
