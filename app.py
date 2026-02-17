@@ -136,6 +136,7 @@ st.title("Local Logistics Planning App")
 if hasattr(st.sidebar, "page_link"):
     st.sidebar.page_link("pages/quick_plan.py", label="Quick Plan", icon="📦")
     st.sidebar.page_link("pages/batch_plan.py", label="Batch Plan", icon="🚚")
+    st.sidebar.page_link("pages/bom_planner.py", label="BOM Planner", icon="🧾")
 section = st.sidebar.radio("Section", ["Planner", "Admin", "Docs"])
 
 if section == "Admin":

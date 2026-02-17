@@ -1148,6 +1148,110 @@ def _migration_16_legal_constraints(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((16, _migration_16_legal_constraints))
 
 
+def _migration_17_bom_batch_planning(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS bom_runs (
+            bom_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS bom_lines (
+            bom_line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            sku_id INTEGER NOT NULL,
+            required_kg REAL NOT NULL,
+            coo_override TEXT,
+            priority INTEGER,
+            notes TEXT,
+            allocation_mode TEXT,
+            allocation_value REAL,
+            allocation_target_mode TEXT,
+            equipment_preference TEXT,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE,
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS pack_plan_lines (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            sku_id INTEGER NOT NULL,
+            required_kg REAL NOT NULL,
+            shipped_kg REAL NOT NULL,
+            excess_kg REAL NOT NULL,
+            packs_required INTEGER NOT NULL,
+            pack_rule_id INTEGER NOT NULL,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE,
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id),
+            FOREIGN KEY (pack_rule_id) REFERENCES packaging_rules(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS container_plan_lines (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            sku_id INTEGER NOT NULL,
+            equipment_code TEXT NOT NULL,
+            packs_fit INTEGER NOT NULL,
+            containers_needed INTEGER NOT NULL,
+            cube_util REAL NOT NULL,
+            weight_util REAL NOT NULL,
+            limiting_constraint TEXT,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS truck_plan_runs (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            equipment_code TEXT NOT NULL,
+            truck_count INTEGER NOT NULL,
+            weight_util REAL NOT NULL,
+            volume_util REAL NOT NULL,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS truck_plan_trucks (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            truck_index INTEGER NOT NULL,
+            total_weight REAL NOT NULL,
+            total_volume REAL NOT NULL,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS truck_plan_truck_items (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            truck_index INTEGER NOT NULL,
+            sku_id INTEGER NOT NULL,
+            packs_loaded INTEGER NOT NULL,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS schedule_summary (
+            bom_run_id INTEGER NOT NULL,
+            phase_name TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            sku_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            lead_days INTEGER NOT NULL,
+            ship_by_date TEXT NOT NULL,
+            FOREIGN KEY (bom_run_id) REFERENCES bom_runs(bom_run_id) ON DELETE CASCADE
+        );
+        """
+    )
+
+
+MIGRATIONS.append((17, _migration_17_bom_batch_planning))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
