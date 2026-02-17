@@ -33,3 +33,21 @@ def test_estimate_container_count():
     assert estimate_equipment_count(50, 10000, eq) == 1
     assert estimate_equipment_count(100, 10000, eq) == 2
     assert estimate_equipment_count(10, 40000, eq) == 2
+
+
+def test_pack_rounding_rejects_non_positive_units_per_pack():
+    rule = PackagingRule(
+        part_number="S1",
+        units_per_pack=0,
+        kg_per_unit=1,
+        pack_tare_kg=0.5,
+        dim_l_m=0.5,
+        dim_w_m=0.4,
+        dim_h_m=0.3,
+    )
+
+    try:
+        rounded_order_packs(50, rule)
+        assert False, "Expected ValueError for units_per_pack <= 0"
+    except ValueError:
+        pass
