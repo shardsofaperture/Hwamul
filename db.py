@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
+import pandas as pd
+
 DB_PATH = Path(os.getenv("PLANNER_DB_PATH", "planner.db"))
 
 
@@ -102,7 +104,58 @@ MIGRATIONS: list[tuple[int, str]] = [
             FOREIGN KEY (demand_line_id) REFERENCES demand_lines(id)
         );
         """,
-    )
+    ),
+    (
+        2,
+        """
+        ALTER TABLE rates RENAME TO rates_old;
+        CREATE TABLE rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin TEXT,
+            destination TEXT,
+            mode TEXT NOT NULL,
+            equipment_name TEXT,
+            pricing_model TEXT NOT NULL,
+            rate_value REAL NOT NULL,
+            minimum_charge REAL,
+            fixed_fee REAL,
+            surcharge REAL,
+            effective_start TEXT,
+            effective_end TEXT,
+            notes TEXT
+        );
+        INSERT INTO rates (id, mode, equipment_name, pricing_model, rate_value, minimum_charge, fixed_fee, surcharge, notes)
+        SELECT id, mode, equipment_name, pricing_model, rate_value, minimum_charge, fixed_fee, surcharge, notes FROM rates_old;
+        DROP TABLE rates_old;
+
+        ALTER TABLE packaging_rules RENAME TO packaging_rules_old;
+        CREATE TABLE packaging_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku TEXT NOT NULL,
+            pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+            is_default INTEGER NOT NULL DEFAULT 1,
+            units_per_pack REAL NOT NULL,
+            kg_per_unit REAL NOT NULL,
+            pack_tare_kg REAL NOT NULL,
+            pack_length_m REAL NOT NULL,
+            pack_width_m REAL NOT NULL,
+            pack_height_m REAL NOT NULL,
+            min_order_packs INTEGER NOT NULL DEFAULT 1,
+            increment_packs INTEGER NOT NULL DEFAULT 1,
+            stackable INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(sku, pack_type),
+            FOREIGN KEY (sku) REFERENCES sku_master(sku)
+        );
+        INSERT INTO packaging_rules (
+            sku, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+            pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable
+        )
+        SELECT sku, 'STANDARD', 1, units_per_pack, kg_per_unit, pack_tare_kg,
+               pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable
+        FROM packaging_rules_old;
+        DROP TABLE packaging_rules_old;
+        """,
+    ),
 ]
 
 
@@ -143,3 +196,54 @@ def insert_many(
     conn: sqlite3.Connection, query: str, rows: Iterable[tuple[object, ...]]
 ) -> None:
     conn.executemany(query, rows)
+
+
+def compute_grid_diff(original: pd.DataFrame, edited: pd.DataFrame, key_cols: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return inserted, updated, deleted rows comparing original and edited data grids."""
+    original = original.copy().fillna("")
+    edited = edited.copy().fillna("")
+
+    orig_indexed = original.set_index(key_cols, drop=False) if not original.empty else pd.DataFrame(columns=edited.columns).set_index(key_cols)
+    edit_indexed = edited.set_index(key_cols, drop=False) if not edited.empty else pd.DataFrame(columns=original.columns).set_index(key_cols)
+
+    inserts_idx = edit_indexed.index.difference(orig_indexed.index)
+    deletes_idx = orig_indexed.index.difference(edit_indexed.index)
+    common_idx = edit_indexed.index.intersection(orig_indexed.index)
+
+    inserts = edit_indexed.loc[inserts_idx].reset_index(drop=True) if len(inserts_idx) else pd.DataFrame(columns=edited.columns)
+    deletes = orig_indexed.loc[deletes_idx].reset_index(drop=True) if len(deletes_idx) else pd.DataFrame(columns=original.columns)
+
+    updates = []
+    for idx in common_idx:
+        o = orig_indexed.loc[idx]
+        e = edit_indexed.loc[idx]
+        if isinstance(o, pd.DataFrame):
+            o = o.iloc[0]
+        if isinstance(e, pd.DataFrame):
+            e = e.iloc[0]
+        if not o.equals(e):
+            updates.append(e.to_dict())
+    updates_df = pd.DataFrame(updates, columns=edited.columns)
+    return inserts, updates_df, deletes
+
+
+def upsert_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_cols: list[str]) -> None:
+    if rows.empty:
+        return
+    columns = list(rows.columns)
+    placeholders = ", ".join(["?"] * len(columns))
+    quoted_cols = ", ".join(columns)
+    update_cols = [c for c in columns if c not in key_cols]
+    update_stmt = ", ".join([f"{col}=excluded.{col}" for col in update_cols])
+    sql = f"INSERT INTO {table} ({quoted_cols}) VALUES ({placeholders}) ON CONFLICT({', '.join(key_cols)}) DO UPDATE SET {update_stmt}"
+    values = [tuple(None if pd.isna(v) or v == "" else v for v in row) for row in rows[columns].itertuples(index=False, name=None)]
+    conn.executemany(sql, values)
+
+
+def delete_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_cols: list[str]) -> None:
+    if rows.empty:
+        return
+    where = " AND ".join([f"{col} = ?" for col in key_cols])
+    sql = f"DELETE FROM {table} WHERE {where}"
+    params = [tuple(row[col] for col in key_cols) for _, row in rows.iterrows()]
+    conn.executemany(sql, params)
