@@ -5,7 +5,9 @@ Uses SQLite with lightweight startup migrations.
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -313,6 +315,45 @@ MIGRATIONS: list[tuple[int, str]] = [
         PRAGMA foreign_keys=ON;
         """,
     ),
+    (
+        5,
+        """
+        PRAGMA foreign_keys=OFF;
+
+        ALTER TABLE tranche_allocations RENAME TO tranche_allocations_old;
+        CREATE TABLE tranche_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            demand_line_id INTEGER NOT NULL,
+            tranche_name TEXT NOT NULL,
+            allocation_type TEXT NOT NULL,
+            allocation_value REAL NOT NULL,
+            manual_lead_override INTEGER,
+            manual_mode_override TEXT,
+            FOREIGN KEY (demand_line_id) REFERENCES demand_lines(id)
+        );
+        INSERT INTO tranche_allocations (
+            id,
+            demand_line_id,
+            tranche_name,
+            allocation_type,
+            allocation_value,
+            manual_lead_override,
+            manual_mode_override
+        )
+        SELECT
+            id,
+            demand_line_id,
+            tranche_name,
+            allocation_type,
+            allocation_value,
+            manual_lead_override,
+            manual_mode_override
+        FROM tranche_allocations_old;
+        DROP TABLE tranche_allocations_old;
+
+        PRAGMA foreign_keys=ON;
+        """,
+    ),
 ]
 
 
@@ -397,10 +438,138 @@ def upsert_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_co
     conn.executemany(sql, values)
 
 
+def _to_native(value: object) -> object:
+    return value.item() if hasattr(value, "item") else value
+
+
 def delete_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_cols: list[str]) -> None:
     if rows.empty:
         return
     where = " AND ".join([f"{col} = ?" for col in key_cols])
     sql = f"DELETE FROM {table} WHERE {where}"
-    params = [tuple(row[col] for col in key_cols) for _, row in rows.iterrows()]
+    params = [tuple(_to_native(row[col]) for col in key_cols) for _, row in rows.iterrows()]
     conn.executemany(sql, params)
+
+
+EXPORT_TABLE_ORDER = [
+    "equipment_presets",
+    "sku_master",
+    "packaging_rules",
+    "lead_times",
+    "lead_time_overrides",
+    "rates",
+    "carrier",
+    "rate_card",
+    "rate_charge",
+    "demand_lines",
+    "tranche_allocations",
+]
+
+TABLE_KEY_COLS: dict[str, list[str]] = {
+    "equipment_presets": ["name"],
+    "sku_master": ["part_number"],
+    "packaging_rules": ["part_number", "pack_type"],
+    "lead_times": ["country_of_origin", "mode"],
+    "lead_time_overrides": ["part_number", "mode"],
+    "rates": ["mode", "pricing_model", "origin", "destination", "equipment_name", "effective_start", "effective_end"],
+    "carrier": ["code"],
+    "rate_card": ["mode", "service_scope", "equipment", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "effective_to", "carrier_id"],
+    "rate_charge": ["rate_card_id", "charge_code", "charge_name", "calc_method", "effective_from", "effective_to"],
+    "demand_lines": ["part_number", "need_date", "qty", "notes"],
+    "tranche_allocations": ["demand_line_id", "tranche_name", "allocation_type"],
+}
+
+
+def _query_map_for_profile(profile: str) -> dict[str, str]:
+    today = date.today().isoformat()
+    if profile == "full":
+        return {table: f"SELECT * FROM {table}" for table in EXPORT_TABLE_ORDER}
+    if profile == "recent":
+        return {
+            "equipment_presets": "SELECT * FROM equipment_presets",
+            "sku_master": "SELECT * FROM sku_master",
+            "packaging_rules": "SELECT * FROM packaging_rules",
+            "lead_times": "SELECT * FROM lead_times",
+            "lead_time_overrides": "SELECT * FROM lead_time_overrides",
+            "rates": (
+                "SELECT * FROM rates "
+                "WHERE (effective_start IS NULL OR effective_start = '' OR effective_start <= :today) "
+                "AND (effective_end IS NULL OR effective_end = '' OR effective_end >= :today)"
+            ),
+        }
+    if profile == "history":
+        return {
+            "demand_lines": "SELECT * FROM demand_lines",
+            "tranche_allocations": "SELECT * FROM tranche_allocations",
+            "rates": (
+                "SELECT * FROM rates "
+                "WHERE effective_end IS NOT NULL AND effective_end <> '' AND effective_end < :today"
+            ),
+        }
+    raise ValueError(f"Unknown export profile: {profile}")
+
+
+def export_data_bundle(profile: str = "full") -> bytes:
+    conn = get_conn()
+    payload: dict[str, object] = {
+        "format": "hwamul.export.v1",
+        "profile": profile,
+        "exported_at": pd.Timestamp.utcnow().isoformat(),
+        "tables": {},
+    }
+    queries = _query_map_for_profile(profile)
+    for table, query in queries.items():
+        df = pd.read_sql_query(query, conn, params={"today": date.today().isoformat()})
+        payload["tables"][table] = df.where(pd.notna(df), None).to_dict("records")
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def import_data_bundle(blob: bytes) -> dict[str, int]:
+    package = json.loads(blob.decode("utf-8"))
+    if package.get("format") != "hwamul.export.v1":
+        raise ValueError("Unsupported bundle format")
+    tables = package.get("tables", {})
+    if not isinstance(tables, dict):
+        raise ValueError("Bundle tables payload must be a dict")
+
+    conn = get_conn()
+    stats: dict[str, int] = {}
+    with conn:
+        for table in EXPORT_TABLE_ORDER:
+            rows = tables.get(table)
+            if not rows:
+                continue
+            frame = pd.DataFrame(rows)
+            if frame.empty:
+                continue
+            key_cols = ["id"] if "id" in frame.columns else TABLE_KEY_COLS.get(table)
+            if not key_cols:
+                continue
+            upsert_rows(conn, table, frame, key_cols)
+            stats[table] = len(frame)
+    return stats
+
+
+def purge_demand_before(cutoff_date: str) -> dict[str, int]:
+    conn = get_conn()
+    with conn:
+        demand_ids = [r[0] for r in conn.execute("SELECT id FROM demand_lines WHERE need_date < ?", (cutoff_date,)).fetchall()]
+        if demand_ids:
+            placeholders = ",".join(["?"] * len(demand_ids))
+            deleted_allocs = conn.execute(
+                f"DELETE FROM tranche_allocations WHERE demand_line_id IN ({placeholders})",
+                demand_ids,
+            ).rowcount
+            deleted_demand = conn.execute(
+                "DELETE FROM demand_lines WHERE need_date < ?",
+                (cutoff_date,),
+            ).rowcount
+        else:
+            deleted_allocs = 0
+            deleted_demand = 0
+    return {"demand_lines": deleted_demand, "tranche_allocations": deleted_allocs}
+
+
+def vacuum_db() -> None:
+    conn = get_conn()
+    conn.execute("VACUUM")
