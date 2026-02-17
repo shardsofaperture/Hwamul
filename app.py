@@ -72,15 +72,18 @@ if section == "Admin":
     elif admin_screen == "SKUs":
         source = read_table("sku_master")
         q = st.text_input("Search SKU or description")
-        filtered = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
-        edited = st.data_editor(filtered, num_rows="dynamic", width="stretch")
+        filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
+        edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_sku"):
             errors = require_cols(edited, ["sku", "default_coo"])
             if errors:
                 st.error("; ".join(errors))
             else:
-                save_grid("sku_master", source, edited, ["sku"])
+                # When search is active, only persist edits for the visible slice.
+                # Diffing against the full table would treat hidden rows as deletions.
+                save_grid("sku_master", filtered_source, edited, ["sku"])
                 st.success("SKUs saved")
+                st.rerun()
 
     elif admin_screen == "Pack rules":
         source = read_table("packaging_rules")
