@@ -35,6 +35,28 @@ def read_table(name: str) -> pd.DataFrame:
     return pd.read_sql_query(f"SELECT * FROM {name}", conn)
 
 
+
+
+def read_sku_catalog() -> pd.DataFrame:
+    conn = get_conn()
+    return pd.read_sql_query(
+        """
+        SELECT
+            sm.sku_id,
+            sm.part_number,
+            sm.supplier_id,
+            s.supplier_code,
+            s.supplier_name,
+            sm.description,
+            sm.default_coo,
+            sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
+        FROM sku_master sm
+        JOIN suppliers s ON s.supplier_id = sm.supplier_id
+        ORDER BY sm.part_number, s.supplier_code
+        """,
+        conn,
+    )
+
 def validate_date_ranges(df: pd.DataFrame, start_col: str, end_col: str, label: str) -> list[str]:
     if start_col not in df.columns or end_col not in df.columns:
         return []
@@ -84,6 +106,7 @@ if section == "Admin":
         "Admin screen",
         [
             "Equipment presets",
+            "Suppliers",
             "SKUs",
             "Pack rules",
             "Lead times",
@@ -110,19 +133,33 @@ if section == "Admin":
                 else:
                     st.error(f"Could not save equipment presets: {err}")
 
+    elif admin_screen == "Suppliers":
+        source = read_table("suppliers")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        if st.button("Save changes", key="save_suppliers"):
+            errors = require_cols(edited, ["supplier_code", "supplier_name"])
+            if errors:
+                st.error("; ".join(errors))
+            else:
+                ok, err = save_grid("suppliers", source, edited, ["supplier_id"])
+                if ok:
+                    st.success("Suppliers saved")
+                else:
+                    st.error(f"Could not save suppliers: {err}")
+
     elif admin_screen == "SKUs":
-        source = read_table("sku_master")
+        source = read_sku_catalog()
         q = st.text_input("Search SKU or description")
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
         edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_sku"):
-            errors = require_cols(edited, ["part_number", "default_coo"])
+            errors = require_cols(edited, ["part_number", "supplier_id", "default_coo"])
             if errors:
                 st.error("; ".join(errors))
             else:
                 # When search is active, only persist edits for the visible slice.
                 # Diffing against the full table would treat hidden rows as deletions.
-                ok, err = save_grid("sku_master", filtered_source, edited, ["part_number"])
+                ok, err = save_grid("sku_master", filtered_source, edited, ["sku_id"])
                 if ok:
                     st.success("SKUs saved")
                     st.rerun()
@@ -130,11 +167,17 @@ if section == "Admin":
                     st.error(f"Could not save SKUs: {err}. If changing existing SKU codes, update dependent pack and demand rows first.")
 
     elif admin_screen == "Pack rules":
-        source = read_table("packaging_rules")
+        source = pd.read_sql_query("""
+            SELECT pr.*, sm.part_number, s.supplier_code, sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
+            FROM packaging_rules pr
+            JOIN sku_master sm ON sm.sku_id = pr.sku_id
+            JOIN suppliers s ON s.supplier_id = sm.supplier_id
+            ORDER BY sm.part_number, s.supplier_code, pr.pack_type
+            """, get_conn())
         edited = st.data_editor(source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_pack"):
-            errors = require_cols(edited, ["part_number", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
-            defaults = edited.groupby("part_number")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
+            errors = require_cols(edited, ["sku_id", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
+            defaults = edited.groupby("sku_id")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
             if not defaults.empty and (defaults < 1).any():
                 errors.append("Each SKU must have at least one default pack type")
             if errors:
@@ -152,7 +195,7 @@ if section == "Admin":
         ov_source = read_table("lead_time_overrides")
         ov_edited = st.data_editor(ov_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_lead"):
-            errors = require_cols(lt_edited, ["country_of_origin", "mode", "lead_days"]) + require_cols(ov_edited, ["part_number", "mode", "lead_days"]) + validate_positive(lt_edited, ["lead_days"], allow_zero=True) + validate_positive(ov_edited, ["lead_days"], allow_zero=True)
+            errors = require_cols(lt_edited, ["country_of_origin", "mode", "lead_days"]) + require_cols(ov_edited, ["sku_id", "mode", "lead_days"]) + validate_positive(lt_edited, ["lead_days"], allow_zero=True) + validate_positive(ov_edited, ["lead_days"], allow_zero=True)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -292,7 +335,13 @@ if section == "Admin":
                 st.success(f"Grand total: {result['grand_total']} {result['currency']}")
 
     elif admin_screen == "Demand entry":
-        source = read_table("demand_lines")
+        source = pd.read_sql_query("""
+        SELECT d.*, sm.part_number, s.supplier_code, sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
+        FROM demand_lines d
+        JOIN sku_master sm ON sm.sku_id = d.sku_id
+        JOIN suppliers s ON s.supplier_id = sm.supplier_id
+        ORDER BY d.id
+        """, get_conn())
         edited = st.data_editor(source, num_rows="dynamic", width="stretch")
         st.caption("Optional CSV import")
         upload = st.file_uploader("Upload demand csv", type=["csv"])
@@ -301,21 +350,33 @@ if section == "Admin":
             st.write("Imported preview (editable)")
             imported_edit = st.data_editor(imported, num_rows="dynamic", width="stretch")
             if st.button("Append imported rows"):
-                conn = get_conn()
-                with conn:
-                    imported_edit.to_sql("demand_lines", conn, if_exists="append", index=False)
-                st.success("Imported rows appended")
+                sku_catalog = read_sku_catalog()
+                import_frame = imported_edit.copy()
+                if "supplier_code" in import_frame.columns:
+                    merged = import_frame.merge(sku_catalog[["sku_id", "part_number", "supplier_code"]], on=["part_number", "supplier_code"], how="left")
+                else:
+                    st.warning("supplier_code missing in import. Using DEFAULT or prompting selection for ambiguous part numbers.")
+                    merged = import_frame.merge(sku_catalog[["sku_id", "part_number", "supplier_code"]], on=["part_number"], how="left")
+                    amb = merged[merged.duplicated(subset=["part_number"], keep=False)]["part_number"].dropna().unique().tolist()
+                    for pn in amb:
+                        choices = sku_catalog[sku_catalog["part_number"] == pn]["sku_id"].tolist()
+                        pick = st.selectbox(f"Select supplier variant for {pn}", choices, key=f"imp_{pn}")
+                        merged.loc[merged["part_number"] == pn, "sku_id"] = pick
+                if merged["sku_id"].isna().any():
+                    st.error("Could not map all imported part numbers to sku_id")
+                else:
+                    to_insert = merged[["sku_id", "need_date", "qty", "coo_override", "priority", "notes"]]
+                    conn = get_conn()
+                    with conn:
+                        to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
+                    st.success("Imported rows appended")
 
         paste = st.text_area("Paste CSV grid (header required)")
         if st.button("Append pasted rows") and paste.strip():
-            pasted_df = pd.read_csv(io.StringIO(paste.strip()))
-            conn = get_conn()
-            with conn:
-                pasted_df.to_sql("demand_lines", conn, if_exists="append", index=False)
-            st.success("Pasted rows appended")
+            st.warning("Use CSV import with supplier_code to map to sku_id.")
 
         if st.button("Save changes", key="save_demand"):
-            errors = require_cols(edited, ["part_number", "need_date", "qty"]) + validate_positive(edited, ["qty"], allow_zero=True) + validate_dates(edited, ["need_date"])
+            errors = require_cols(edited, ["sku_id", "need_date", "qty"]) + validate_positive(edited, ["qty"], allow_zero=True) + validate_dates(edited, ["need_date"])
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -388,13 +449,14 @@ else:
     with alloc_tab:
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
+        skus = read_sku_catalog()
         if demands.empty or packs.empty:
             st.info("Need demand_lines and packaging_rules first")
         else:
             line = st.selectbox("Demand line", demands["id"].tolist())
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["part_number"] == d["part_number"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["part_number"] == d["part_number"]].iloc[0]
+            pack_rows = packs[(packs["sku_id"] == d["sku_id"]) & (packs["is_default"] == 1)]
+            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku_id"] == d["sku_id"]].iloc[0]
             rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
 
             st.write("Define tranches")
@@ -418,6 +480,7 @@ else:
     with rec_tab:
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
+        skus = read_sku_catalog()
         eq = read_table("equipment_presets")
         rates = read_table("rates")
         lead = read_table("lead_times")
@@ -426,20 +489,20 @@ else:
         if not demands.empty and not packs.empty and not eq.empty:
             line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line")
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["part_number"] == d["part_number"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["part_number"] == d["part_number"]].iloc[0]
+            pack_rows = packs[(packs["sku_id"] == d["sku_id"]) & (packs["is_default"] == 1)]
+            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku_id"] == d["sku_id"]].iloc[0]
             rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
             need_date = pd.to_datetime(d["need_date"]).date()
-            coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("part_number").loc[d["part_number"], "default_coo"]
+            coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("sku_id").loc[d["sku_id"], "default_coo"]
 
             eq_by_mode: dict[str, list[Equipment]] = {}
             for mode, g in eq.groupby("mode"):
                 eq_by_mode[mode] = [equipment_from_row(x) for x in g.to_dict("records")]
 
             lead_tbl = {(r["country_of_origin"], r["mode"]): int(r["lead_days"]) for _, r in lead.iterrows()}
-            part_number_ov = {(r["part_number"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
+            part_number_ov = {(r["sku_id"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
             recs = recommend_modes(
-                part_number=d["part_number"],
+                part_number=str(d["sku_id"]),
                 coo=coo,
                 need_date=need_date,
                 ordered_units=d["qty"],

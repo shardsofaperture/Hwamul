@@ -47,22 +47,25 @@ def seed_if_empty() -> None:
                 ("Air", "Air", "per_kg", 3.8, 250, 75, 0, None),
             ],
         )
+        conn.execute("INSERT OR IGNORE INTO suppliers(supplier_code, supplier_name) VALUES (?,?)", ("DEFAULT", "Default Supplier"))
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='DEFAULT'").fetchone()["supplier_id"]
         conn.executemany(
-            "INSERT INTO sku_master(part_number, description, default_coo) VALUES (?,?,?)",
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES (?,?,?,?)",
             [
-                ("MFG-88421", "Sample Widget", "CN"),
-                ("INT-100045", "Sample Gizmo", "MX"),
+                ("MFG-88421", supplier_id, "Sample Widget", "CN"),
+                ("INT-100045", supplier_id, "Sample Gizmo", "MX"),
             ],
         )
+        sku_map = {r["part_number"]: r["sku_id"] for r in conn.execute("SELECT sku_id, part_number FROM sku_master WHERE supplier_id=?", (supplier_id,)).fetchall()}
         conn.executemany(
             """
             INSERT INTO packaging_rules
-            (part_number, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable)
+            (sku_id, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable)
             VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             [
-                ("MFG-88421", 24, 1.2, 0.8, 0.55, 0.40, 0.35, 5, 5, 1),
-                ("INT-100045", 12, 2.1, 1.0, 0.60, 0.45, 0.40, 2, 2, 1),
+                (sku_map["MFG-88421"], 24, 1.2, 0.8, 0.55, 0.40, 0.35, 5, 5, 1),
+                (sku_map["INT-100045"], 12, 2.1, 1.0, 0.60, 0.45, 0.40, 2, 2, 1),
             ],
         )
 
@@ -71,8 +74,8 @@ def ensure_templates() -> None:
     template_dir = Path("templates")
     template_dir.mkdir(exist_ok=True)
     (template_dir / "demand_template.csv").write_text(
-        "part_number,need_date,qty,coo_override,priority,notes\nMFG-88421,2026-03-10,250,,High,launch\n"
+        "part_number,supplier_code,need_date,qty,coo_override,priority,notes\nMFG-88421,DEFAULT,2026-03-10,250,,High,launch\n"
     )
     (template_dir / "bom_template.csv").write_text(
-        "part_number,need_date,qty\nINT-100045,2026-03-17,96\n"
+        "part_number,supplier_code,need_date,qty\nINT-100045,DEFAULT,2026-03-17,96\n"
     )

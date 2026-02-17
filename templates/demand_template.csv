@@ -1,2 +1,2 @@
-part_number,need_date,qty,coo_override,priority,notes
-MFG-88421,2026-03-10,250,,High,launch
+part_number,supplier_code,need_date,qty,coo_override,priority,notes
+MFG-88421,DEFAULT,2026-03-10,250,,High,launch
