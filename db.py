@@ -160,6 +160,62 @@ MIGRATIONS: list[tuple[int, str]] = [
         DROP TABLE packaging_rules_old;
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS carrier (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            notes TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS rate_card (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            carrier_id INTEGER,
+            mode TEXT NOT NULL,
+            service_scope TEXT NOT NULL,
+            equipment TEXT NOT NULL,
+            dim_class TEXT NOT NULL,
+            origin_type TEXT NOT NULL,
+            origin_code TEXT NOT NULL,
+            dest_type TEXT NOT NULL,
+            dest_code TEXT NOT NULL,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            uom_pricing TEXT NOT NULL,
+            base_rate REAL NOT NULL,
+            min_charge REAL,
+            effective_from TEXT NOT NULL,
+            effective_to TEXT,
+            contract_start TEXT,
+            contract_end TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            FOREIGN KEY (carrier_id) REFERENCES carrier(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS rate_charge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rate_card_id INTEGER NOT NULL,
+            charge_code TEXT NOT NULL,
+            charge_name TEXT NOT NULL,
+            calc_method TEXT NOT NULL,
+            amount REAL NOT NULL,
+            min_amount REAL,
+            max_amount REAL,
+            applies_when TEXT NOT NULL DEFAULT 'ALWAYS',
+            effective_from TEXT,
+            effective_to TEXT,
+            FOREIGN KEY (rate_card_id) REFERENCES rate_card(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_rate_card_lookup
+            ON rate_card(mode, equipment, service_scope, origin_type, origin_code, dest_type, dest_code, effective_from, effective_to, is_active, priority);
+        CREATE INDEX IF NOT EXISTS idx_rate_charge_rate_card ON rate_charge(rate_card_id);
+        """,
+    ),
 ]
 
 
