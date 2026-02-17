@@ -19,9 +19,30 @@ class PackagingRule:
     max_stack: int | None = None
     part_number: str = ""
 
+    @staticmethod
+    def _to_meters(dimension: float) -> float:
+        """Normalize input dimension to meters.
+
+        Legacy data uses meters while new import templates use centimeters.
+        We treat values above 3 as centimeters to support pallet/crate inputs.
+        """
+        return dimension / 100.0 if dimension > 3 else dimension
+
+    @property
+    def dim_l_norm_m(self) -> float:
+        return self._to_meters(self.dim_l_m)
+
+    @property
+    def dim_w_norm_m(self) -> float:
+        return self._to_meters(self.dim_w_m)
+
+    @property
+    def dim_h_norm_m(self) -> float:
+        return self._to_meters(self.dim_h_m)
+
     @property
     def pack_cube_m3(self) -> float:
-        return self.dim_l_m * self.dim_w_m * self.dim_h_m
+        return self.dim_l_norm_m * self.dim_w_norm_m * self.dim_h_norm_m
 
     @property
     def gross_pack_weight_kg(self) -> float:

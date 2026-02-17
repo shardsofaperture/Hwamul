@@ -157,9 +157,9 @@ def recommend_modes(
         w_ok = True
         h_ok = True
         if not eqn.endswith("FR"):
-            l_ok = pack_rule.dim_l_m <= 12.03
-            w_ok = pack_rule.dim_w_m <= 2.35
-            h_ok = pack_rule.dim_h_m <= 2.39
+            l_ok = pack_rule.dim_l_norm_m <= 12.03
+            w_ok = pack_rule.dim_w_norm_m <= 2.35
+            h_ok = pack_rule.dim_h_norm_m <= 2.39
         over_h = not h_ok
         over_w = not w_ok
         return {
