@@ -52,6 +52,8 @@ def rounded_order_packs(required_units: float, rule: PackagingRule) -> int:
     3) Enforce MOQ.
     4) Round up again to increment multiple.
     """
+    if rule.units_per_pack <= 0:
+        raise ValueError("units_per_pack must be greater than 0")
     raw_packs = required_units / rule.units_per_pack
     packs = max(ceil(raw_packs), rule.min_order_packs)
     inc = max(1, rule.increment_packs)
