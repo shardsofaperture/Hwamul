@@ -6,7 +6,7 @@ Use this sequence when configuring a fresh environment.
 1. **Admin → Suppliers**
    - Add all suppliers (`supplier_code`, `supplier_name`).
 2. **Admin → SKUs**
-   - Add supplier-specific SKUs (`part_number + supplier_id`).
+   - Add supplier-specific SKUs (`part_number + supplier_id`) including logistics profile defaults (source location, Incoterm, UOM).
 3. **Admin → Pack rules**
    - Add at least one default pack rule per SKU.
 4. **Admin → Lead times**
@@ -21,7 +21,7 @@ Use this sequence when configuring a fresh environment.
 8. **Admin → Demand entry**
    - Enter demand manually or import from CSV.
 9. **Planner**
-   - Use **Allocation**, **Recommendations**, **Shipment Builder**, and **Export** tabs.
+   - Use **Allocation**, **Recommendations**, **Cube Out**, **Shipment Builder**, and **Export** tabs.
 
 ## Recommended operating rhythm
 - Update demand and urgent lead-time exceptions daily.

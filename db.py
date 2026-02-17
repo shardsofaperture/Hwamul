@@ -795,6 +795,25 @@ def _migration_12_phase_and_lane_defaults(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((12, _migration_12_phase_and_lane_defaults))
 
 
+def _migration_13_sku_logistics_profile(conn: sqlite3.Connection) -> None:
+    sku_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sku_master'"
+    ).fetchone()
+    if not sku_exists:
+        return
+
+    sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(sku_master)").fetchall()}
+    if "source_location" not in sku_cols:
+        conn.execute("ALTER TABLE sku_master ADD COLUMN source_location TEXT")
+    if "incoterm" not in sku_cols:
+        conn.execute("ALTER TABLE sku_master ADD COLUMN incoterm TEXT")
+    if "uom" not in sku_cols:
+        conn.execute("ALTER TABLE sku_master ADD COLUMN uom TEXT")
+
+
+MIGRATIONS.append((13, _migration_13_sku_logistics_profile))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
