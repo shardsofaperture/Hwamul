@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import sqlite3
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -24,7 +25,8 @@ from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
 from seed import ensure_templates, seed_if_empty
-from validators import require_cols, validate_dates, validate_positive
+from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
+from validators import require_cols, validate_dates, validate_positive, validate_with_specs
 
 st.set_page_config(page_title="Logistics Planner", layout="wide")
 run_migrations()
@@ -99,8 +101,26 @@ def save_grid(table: str, original: pd.DataFrame, edited: pd.DataFrame, key_cols
     return True, None
 
 
+def render_about(title: str, body: str) -> None:
+    with st.expander("About this page", expanded=False):
+        st.markdown(f"**{title}**\n\n{body}")
+
+
+def render_field_guide(table_key: str) -> None:
+    if table_key not in TABLE_SPECS:
+        return
+    with st.expander("Field guide (columns)", expanded=False):
+        st.dataframe(field_guide_df(table_key), width="stretch", hide_index=True)
+
+
+def render_docs_page(doc_file: str) -> None:
+    docs_dir = Path(__file__).resolve().parent / "docs"
+    content = (docs_dir / doc_file).read_text(encoding="utf-8")
+    st.markdown(content)
+
+
 st.title("Local Logistics Planning App")
-section = st.sidebar.radio("Section", ["Planner", "Admin"])
+section = st.sidebar.radio("Section", ["Planner", "Admin", "Docs"])
 
 if section == "Admin":
     st.sidebar.header("Admin")
@@ -122,10 +142,21 @@ if section == "Admin":
     )
 
     if admin_screen == "Equipment presets":
+        render_about(
+            "Equipment presets",
+            """Manage equipment dimensions and payload caps used by recommendation and shipment builders.
+
+Prerequisites: none.
+
+Steps: 1) Add/update rows. 2) Keep size/payload values non-negative. 3) Save changes.
+
+Example: mode OCEAN, name 40DV, max_payload_kg 26700.""",
+        )
         source = read_table("equipment_presets")
-        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        render_field_guide("equipment")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("equipment"))
         if st.button("Save changes", key="save_eq"):
-            errors = require_cols(edited, ["name", "mode"]) + validate_positive(edited, ["length_m", "width_m", "height_m"]) + validate_positive(edited, ["max_payload_kg"], allow_zero=True)
+            errors = validate_with_specs("equipment", edited)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -136,10 +167,21 @@ if section == "Admin":
                     st.error(f"Could not save equipment presets: {err}")
 
     elif admin_screen == "Suppliers":
+        render_about(
+            "Suppliers",
+            """Create supplier master records used by supplier-specific SKUs and pack rules.
+
+Prerequisites: none.
+
+Steps: 1) Enter supplier_code and supplier_name. 2) Save.
+
+Example: supplier_code MAEU, supplier_name Maersk Line.""",
+        )
         source = read_table("suppliers")
-        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        render_field_guide("suppliers")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("suppliers"))
         if st.button("Save changes", key="save_suppliers"):
-            errors = require_cols(edited, ["supplier_code", "supplier_name"])
+            errors = validate_with_specs("suppliers", edited)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -151,11 +193,13 @@ if section == "Admin":
 
     elif admin_screen == "SKUs":
         source = read_sku_catalog()
-        q = st.text_input("Search SKU or description")
+        q = st.text_input("Search SKU or description", help="Filter rows by part number, supplier code/name, or description. Example: PN_10001")
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
-        edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch")
+        render_about("SKUs", "Define supplier-specific SKU records.\n\nPrerequisites: at least one supplier.\n\nSteps: 1) Search optional. 2) Edit part_number/default_coo. 3) Save.\n\nExample: PN_10001 + supplier_id 1 + COO CN.")
+        render_field_guide("skus")
+        edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch", column_config=table_column_config("skus"))
         if st.button("Save changes", key="save_sku"):
-            errors = require_cols(edited, ["part_number", "supplier_id", "default_coo"])
+            errors = validate_with_specs("skus", edited)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -174,7 +218,8 @@ if section == "Admin":
             st.warning("No SKUs found. Create a SKU first.")
             st.stop()
 
-        search = st.text_input("Search SKU (PN, supplier code/name, description)", key="pack_sku_search")
+        render_about("Pack rules", "Maintain packaging rules per supplier-specific SKU.\n\nPrerequisites: SKU exists.\n\nSteps: 1) Pick SKU. 2) Add/edit pack rules. 3) Set one default. 4) Save.\n\nExample: CARTON_STD with 120 units_per_pack.")
+        search = st.text_input("Search SKU (PN, supplier code/name, description)", key="pack_sku_search", help="Filter SKU list before selecting. Example: MAEU")
         if search:
             mask = (
                 sku_catalog["part_number"].str.contains(search, case=False, na=False)
@@ -197,7 +242,7 @@ if section == "Admin":
         )
         sku_options = sku_catalog["sku_id"].tolist()
         selected_sku_id = st.selectbox(
-            "Select SKU",
+            "Select SKU", help="Select the supplier-specific SKU whose pack rules you want to edit. Example: PN_10001 [MAEU]",
             options=sku_options,
             format_func=lambda sid: sku_catalog.loc[sku_catalog["sku_id"] == sid, "select_label"].iloc[0],
             key="selected_sku_id",
@@ -216,7 +261,7 @@ if section == "Admin":
             params=(selected_sku_id,),
         )
         selector_options = pack_source["id"].tolist() if not pack_source.empty else []
-        selected_pack_id = st.selectbox("Selected pack rule", [None] + selector_options, key="selected_pack_rule")
+        selected_pack_id = st.selectbox("Selected pack rule", [None] + selector_options, key="selected_pack_rule", help="Pick a row id to duplicate/delete/set default.")
 
         b1, b2, b3, b4 = st.columns(4)
         if b1.button("Add pack rule"):
@@ -270,6 +315,7 @@ if section == "Admin":
             else:
                 st.warning("Check confirm delete first.")
 
+        render_field_guide("pack_rules")
         edited = st.data_editor(
             pack_source,
             num_rows="dynamic",
@@ -280,10 +326,11 @@ if section == "Admin":
             ],
             disabled=["sku_id"],
             key="pack_rules_editor",
+            column_config=table_column_config("pack_rules"),
         )
 
         if st.button("Save changes", key="save_pack"):
-            errors = require_cols(edited, ["sku_id", "pack_name", "units_per_pack"]) + validate_positive(edited, ["units_per_pack", "dim_l_m", "dim_w_m", "dim_h_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
+            errors = validate_with_specs("pack_rules", edited)
             if edited["is_default"].sum() > 1:
                 errors.append("Only one default pack rule is allowed per SKU")
             if errors:
@@ -297,12 +344,22 @@ if section == "Admin":
                     st.error(f"Could not save pack rules: {err}")
 
     elif admin_screen == "Lead times":
+        render_about("Lead times", """Define default lead times by COO/mode and SKU overrides.
+
+Prerequisites: SKU exists for overrides.
+
+Steps: 1) Update lead_days rows. 2) Save both grids.
+
+Example: CN + OCEAN = 35 days.""")
         lt_source = read_table("lead_times")
-        lt_edited = st.data_editor(lt_source, num_rows="dynamic", width="stretch")
+        render_field_guide("lead_times")
+        lt_edited = st.data_editor(lt_source, num_rows="dynamic", width="stretch", column_config=table_column_config("lead_times"))
         ov_source = read_table("lead_time_overrides")
+        with st.expander("Field guide (columns)", expanded=False):
+            st.markdown("- sku_id: int >= 1 (example 10)\n- mode: text (example OCEAN)\n- lead_days: int >= 0 (example 35)")
         ov_edited = st.data_editor(ov_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_lead"):
-            errors = require_cols(lt_edited, ["country_of_origin", "mode", "lead_days"]) + require_cols(ov_edited, ["sku_id", "mode", "lead_days"]) + validate_positive(lt_edited, ["lead_days"], allow_zero=True) + validate_positive(ov_edited, ["lead_days"], allow_zero=True)
+            errors = validate_with_specs("lead_times", lt_edited)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -314,7 +371,10 @@ if section == "Admin":
                     st.error(f"Could not save lead times/overrides: {err_lt or err_ov}")
 
     elif admin_screen == "Rates":
+        render_about("Rates", "Legacy rates table for mode pricing scenarios.\n\nPrerequisites: none.\n\nSteps: edit rate rows and save.\n\nExample: OCEAN + FLAT_PER_CONTAINER + 4000.")
         source = read_table("rates")
+        with st.expander("Field guide (columns)", expanded=False):
+            st.markdown("Use numeric `rate_value >= 0` and date columns in `YYYY-MM-DD` when provided.")
         edited = st.data_editor(source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_rates"):
             errors = require_cols(edited, ["mode", "pricing_model", "rate_value"]) + validate_positive(edited, ["rate_value"], allow_zero=True)
@@ -329,7 +389,10 @@ if section == "Admin":
                     st.error(f"Could not save rates: {err}")
 
     elif admin_screen == "Carriers":
+        render_about("Carriers", "Manage carrier master used by rate cards.\n\nPrerequisites: none.\n\nSteps: 1) Enter code and name. 2) Set active flag. 3) Save.\n\nExample: code MAEU, name Maersk.")
         source = read_table("carrier")
+        with st.expander("Field guide (columns)", expanded=False):
+            st.markdown("- code: text 2-32 uppercase/code style (example MAEU)\n- name: text label\n- is_active: bool 0/1")
         edited = st.data_editor(source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_carriers"):
             edited = normalize_bools(edited, ["is_active"])
@@ -344,20 +407,23 @@ if section == "Admin":
                     st.error(f"Could not save carriers: {err}")
 
     elif admin_screen == "Rate cards":
+        render_about("Rate cards", "Maintain base rates and accessorial charges with effective dates.\n\nPrerequisites: carriers optional, route definitions known.\n\nSteps: 1) Edit rate cards. 2) Select card. 3) Edit charges. 4) Save.\n\nExample: OCEAN 40DV P2D USLAX->CNSHA.")
         cards_source = read_table("rate_card")
-        cards_edited = st.data_editor(cards_source, num_rows="dynamic", width="stretch")
+        render_field_guide("rate_cards")
+        cards_edited = st.data_editor(cards_source, num_rows="dynamic", width="stretch", column_config=table_column_config("rate_cards"))
         st.divider()
         st.subheader("Rate charges")
         card_options = cards_edited["id"].dropna().astype(int).tolist() if not cards_edited.empty else []
         charges_source = read_table("rate_charge")
         selected_card_id = None
         if card_options:
-            selected_card_id = st.selectbox("Select rate_card", card_options)
+            selected_card_id = st.selectbox("Select rate_card", card_options, help="Choose a saved rate card id before editing charges.")
             charge_view = charges_source[charges_source["rate_card_id"] == selected_card_id]
         else:
             st.info("Create and save at least one rate card before editing charges.")
             charge_view = charges_source.iloc[0:0]
-        charges_edited = st.data_editor(charge_view, num_rows="dynamic", width="stretch")
+        render_field_guide("rate_charges")
+        charges_edited = st.data_editor(charge_view, num_rows="dynamic", width="stretch", column_config=table_column_config("rate_charges"))
 
         if st.button("Save rate master", key="save_rate_master"):
             cards_edited = normalize_bools(cards_edited, ["is_active"])
@@ -366,15 +432,13 @@ if section == "Admin":
                 "origin_type", "origin_code", "dest_type", "dest_code",
                 "currency", "uom_pricing", "base_rate", "effective_from",
             ]
-            errors = require_cols(cards_edited, card_required)
-            errors += validate_positive(cards_edited, ["base_rate", "priority"], allow_zero=True)
+            errors = validate_with_specs("rate_cards", cards_edited)
             errors += validate_dates(cards_edited, ["effective_from", "effective_to", "contract_start", "contract_end"])
             errors += validate_date_ranges(cards_edited, "effective_from", "effective_to", "Rate cards")
             errors += validate_date_ranges(cards_edited, "contract_start", "contract_end", "Rate cards")
 
             if not charges_edited.empty:
-                errors += require_cols(charges_edited, ["rate_card_id", "charge_code", "charge_name", "calc_method", "amount", "applies_when"])
-                errors += validate_positive(charges_edited, ["amount"], allow_zero=True)
+                errors += validate_with_specs("rate_charges", charges_edited)
                 errors += validate_dates(charges_edited, ["effective_from", "effective_to"])
                 errors += validate_date_ranges(charges_edited, "effective_from", "effective_to", "Rate charges")
 
@@ -390,26 +454,27 @@ if section == "Admin":
                     st.error(f"Could not save rate master: {err_cards or err_charges}")
 
     elif admin_screen == "Rate Test":
+        render_about("Rate Test", "Test how a hypothetical shipment selects a rate card and computes total cost.\n\nPrerequisites: active rate cards/charges exist.\n\nSteps: fill shipment fields, run test, review selected card and line items.\n\nExample: OCEAN 40DV P2D USLAX to CNSHA.")
         cards = read_table("rate_card")
         carriers = read_table("carrier")
         charges = read_table("rate_charge")
         with st.form("rate_test_form"):
             c1, c2, c3 = st.columns(3)
             with c1:
-                ship_date = st.date_input("Ship date", value=date.today())
-                mode = st.text_input("Mode", value="OCEAN")
-                equipment = st.text_input("Equipment", value="40DV")
-                service_scope = st.selectbox("Service scope", ["P2P", "P2D", "D2P", "D2D"])
+                ship_date = st.date_input("Ship date", value=date.today(), help="Shipment date in YYYY-MM-DD. Example: 2026-01-15")
+                mode = st.text_input("Mode", value="OCEAN", help=build_help_text("rate_cards", "mode"))
+                equipment = st.text_input("Equipment", value="40DV", help=build_help_text("rate_cards", "equipment"))
+                service_scope = st.selectbox("Service scope", ["P2P", "P2D", "D2P", "D2D"], help=build_help_text("rate_cards", "service_scope"))
             with c2:
-                origin_type = st.text_input("Origin type", value="PORT")
-                origin_code = st.text_input("Origin code", value="USLAX")
-                dest_type = st.text_input("Dest type", value="PORT")
-                dest_code = st.text_input("Dest code", value="CNSHA")
+                origin_type = st.text_input("Origin type", value="PORT", help=build_help_text("rate_cards", "origin_type"))
+                origin_code = st.text_input("Origin code", value="USLAX", help=build_help_text("rate_cards", "origin_code"))
+                dest_type = st.text_input("Dest type", value="PORT", help=build_help_text("rate_cards", "dest_type"))
+                dest_code = st.text_input("Dest code", value="CNSHA", help=build_help_text("rate_cards", "dest_code"))
             with c3:
                 carrier_id = st.selectbox("Carrier", [None] + carriers.get("id", pd.Series(dtype=int)).dropna().astype(int).tolist())
-                weight_kg = st.number_input("Weight kg", min_value=0.0, value=1000.0)
-                volume_m3 = st.number_input("Volume m3", min_value=0.0, value=10.0)
-                containers_count = st.number_input("Containers count", min_value=0.0, value=1.0)
+                weight_kg = st.number_input("Weight kg", min_value=0.0, value=1000.0, help=">= 0. Example: 12000")
+                volume_m3 = st.number_input("Volume m3", min_value=0.0, value=10.0, help=">= 0. Example: 28.5")
+                containers_count = st.number_input("Containers count", min_value=0.0, value=1.0, help=">= 0. Example: 2")
 
             f1, f2 = st.columns(2)
             with f1:
@@ -420,7 +485,7 @@ if section == "Admin":
                 oh = st.checkbox("Over Height")
                 ow = st.checkbox("Over Width")
                 ohw = st.checkbox("Over Height + Width")
-                miles = st.number_input("Miles", min_value=0.0, value=0.0)
+                miles = st.number_input("Miles", min_value=0.0, value=0.0, help=">= 0. Example: 320")
             submit = st.form_submit_button("Run rate test")
 
         if submit:
@@ -442,6 +507,7 @@ if section == "Admin":
                 st.success(f"Grand total: {result['grand_total']} {result['currency']}")
 
     elif admin_screen == "Demand entry":
+        render_about("Demand entry", "Create/edit demand lines and optional CSV imports.\n\nPrerequisites: suppliers and SKUs exist.\n\nSteps: 1) Add lines with sku_id, need_date, qty. 2) Optionally import CSV. 3) Save.\n\nExample: sku_id 10, need_date 2026-04-01, qty 1200.")
         source = pd.read_sql_query("""
         SELECT d.*, sm.part_number, s.supplier_code, sm.part_number || ' [' || s.supplier_code || ']' AS sku_label
         FROM demand_lines d
@@ -449,12 +515,15 @@ if section == "Admin":
         JOIN suppliers s ON s.supplier_id = sm.supplier_id
         ORDER BY d.id
         """, get_conn())
-        edited = st.data_editor(source, num_rows="dynamic", width="stretch")
+        render_field_guide("demand")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("demand"), disabled=["part_number", "supplier_code", "sku_label"])
         st.caption("Optional CSV import")
-        upload = st.file_uploader("Upload demand csv", type=["csv"])
+        upload = st.file_uploader("Upload demand csv", type=["csv"], help="CSV with part_number, supplier_code(optional), need_date YYYY-MM-DD, qty.")
         if upload is not None:
             imported = pd.read_csv(upload)
             st.write("Imported preview (editable)")
+            with st.expander("Field guide (columns)", expanded=False):
+                st.markdown("Imported demand columns should include part_number, need_date (YYYY-MM-DD), qty (>=0), and optional supplier_code/coo_override/priority/notes.")
             imported_edit = st.data_editor(imported, num_rows="dynamic", width="stretch")
             if st.button("Append imported rows"):
                 sku_catalog = read_sku_catalog()
@@ -485,7 +554,7 @@ if section == "Admin":
             st.warning("Use CSV import with supplier_code to map to sku_id.")
 
         if st.button("Save changes", key="save_demand"):
-            errors = require_cols(edited, ["sku_id", "need_date", "qty"]) + validate_positive(edited, ["qty"], allow_zero=True) + validate_dates(edited, ["need_date"])
+            errors = validate_with_specs("demand", edited) + validate_dates(edited, ["need_date"])
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -496,6 +565,7 @@ if section == "Admin":
                     st.error(f"Could not save demand lines: {err}")
 
     elif admin_screen == "Data management":
+        render_about("Data management", "Export/import JSON bundles, purge old demand, and compact DB.\n\nPrerequisites: none.\n\nSteps: download/upload bundle as needed, then run cleanup actions carefully.\n\nExample: export full bundle before large edits.")
         st.subheader("Bulk export / import")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -541,7 +611,7 @@ if section == "Admin":
 
         st.divider()
         st.subheader("Cleanup tools")
-        cutoff = st.date_input("Delete demand history before", value=date.today(), key="purge_cutoff")
+        cutoff = st.date_input("Delete demand history before", value=date.today(), key="purge_cutoff", help="Deletes demand/tranche rows older than this YYYY-MM-DD date.")
         if st.button("Purge historical demand", key="purge_demand"):
             deleted = purge_demand_before(cutoff.isoformat())
             st.success(
@@ -552,23 +622,24 @@ if section == "Admin":
             vacuum_db()
             st.success("Database compacted")
 
-else:
+elif section == "Planner":
     alloc_tab, rec_tab, ship_tab, exp_tab = st.tabs(["Allocation", "Recommendations", "Shipment Builder", "Export"])
 
     with alloc_tab:
+        render_about("Allocation", "Preview tranche allocation for one demand line using selected pack rule.\n\nPrerequisites: demand lines + pack rules exist.\n\nSteps: pick demand line, optional override, edit tranches, review result.\n\nExample: T1 60%, T2 40%.")
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
         skus = read_sku_catalog()
         if demands.empty or packs.empty:
             st.info("Need demand_lines and packaging_rules first")
         else:
-            line = st.selectbox("Demand line", demands["id"].tolist())
+            line = st.selectbox("Demand line", demands["id"].tolist(), help="Select demand line id to allocate.")
             d = demands[demands["id"] == line].iloc[0]
             conn = get_conn()
             d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
             p = resolve_pack_rule_for_demand(conn, d_row)
             sku_pack_options = packs[packs["sku_id"] == d["sku_id"]][["id", "pack_name"]]
-            selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"rec_pack_override_{line}")
+            selected_override = st.selectbox("Pack rule override", [None] + sku_pack_options["id"].tolist(), format_func=lambda x: "Default" if x is None else sku_pack_options.loc[sku_pack_options["id"] == x, "pack_name"].iloc[0], key=f"rec_pack_override_{line}", help="Optional explicit pack rule for this demand line.")
             if st.button("Save pack override", key=f"save_rec_pack_override_{line}"):
                 with conn:
                     conn.execute("UPDATE demand_lines SET pack_rule_id = ? WHERE id = ?", (selected_override, int(d["id"])))
@@ -576,6 +647,8 @@ else:
             rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys() if k in p.keys()})
 
             st.write("Define tranches")
+            with st.expander("Field guide (columns)", expanded=False):
+                st.markdown("- tranche_name: text (example T1)\n- allocation_type: text percent|units (example percent)\n- allocation_value: decimal >=0 (example 60)")
             tr_input = st.data_editor(
                 pd.DataFrame(
                     [
@@ -594,6 +667,7 @@ else:
             st.dataframe(pd.DataFrame([r.__dict__ for r in rows]), width="stretch")
 
     with rec_tab:
+        render_about("Recommendations", "Calculate mode recommendations from lead times, equipment, and rates.\n\nPrerequisites: demand, pack rules, equipment exist.\n\nSteps: select line, optional pack override/manual lead, review output table.\n\nExample: set manual lead override to 2 days.")
         demands = read_table("demand_lines")
         packs = read_table("packaging_rules")
         skus = read_sku_catalog()
@@ -603,7 +677,7 @@ else:
         lead_ov = read_table("lead_time_overrides")
 
         if not demands.empty and not packs.empty and not eq.empty:
-            line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line")
+            line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line", help="Select demand line id to evaluate.")
             d = demands[demands["id"] == line].iloc[0]
             conn = get_conn()
             d_row = conn.execute("SELECT * FROM demand_lines WHERE id = ?", (int(d["id"]),)).fetchone()
@@ -634,12 +708,15 @@ else:
                 rates=rates.to_dict("records"),
                 lead_table=lead_tbl,
                 part_number_lead_override=part_number_ov,
-                manual_lead_override=st.number_input("Manual lead override", min_value=0, value=0),
+                manual_lead_override=st.number_input("Manual lead override", min_value=0, value=0, help="Optional extra lead days >=0. Example: 3"),
             )
             st.dataframe(pd.DataFrame(recs), width="stretch")
 
     with ship_tab:
+        render_about("Shipment Builder", "Simulate greedy consolidation into equipment presets.\n\nPrerequisites: equipment presets exist.\n\nSteps: edit demo rows, run auto calculation, inspect shipment output.\n\nExample: two OCEAN rows combine when capacity allows.")
         st.write("Greedy consolidation preview (volume then weight)")
+        with st.expander("Field guide (columns)", expanded=False):
+            st.markdown("- mode: text (example OCEAN)\n- volume_m3: decimal >=0\n- weight_kg: decimal >=0\n- ship_by: date YYYY-MM-DD\n- cost: decimal >=0")
         demo = st.data_editor(
             pd.DataFrame(
                 [
@@ -658,6 +735,7 @@ else:
             st.dataframe(pd.DataFrame(shipments), width="stretch")
 
     with exp_tab:
+        render_about("Export", "Download CSV reports for shipment planning artifacts.\n\nPrerequisites: data loaded.\n\nSteps: click each button to download CSV output.\n\nExample: shipment_plan.csv for planning review.")
         st.subheader("Export reports")
         demand = read_table("demand_lines")
         booking = read_table("rates")
@@ -669,5 +747,31 @@ else:
         dl(demand, "shipment_plan.csv")
         dl(booking, "booking_summary.csv")
         dl(excess, "excess_report.csv")
+
+
+elif section == "Docs":
+    st.header("In-app Docs")
+    doc_page = st.sidebar.selectbox(
+        "Docs page",
+        ["Quick Start", "Data Model", "Rates Guide", "Import Templates", "FAQ/Troubleshooting"],
+        help="Open built-in setup and operations documentation.",
+    )
+    if doc_page == "Quick Start":
+        render_docs_page("quick_start.md")
+    elif doc_page == "Data Model":
+        render_docs_page("data_model.md")
+    elif doc_page == "Rates Guide":
+        render_docs_page("rates_guide.md")
+    elif doc_page == "Import Templates":
+        render_docs_page("import_templates.md")
+        st.subheader("Download CSV templates")
+        for table_key, fname in [("suppliers", "suppliers_template.csv"), ("skus", "skus_template.csv"), ("pack_rules", "pack_rules_template.csv"), ("lead_times", "lead_times_template.csv"), ("demand", "demand_template.csv"), ("rate_cards", "rate_cards_template.csv"), ("rate_charges", "rate_charges_template.csv")]:
+            cols = list(TABLE_SPECS[table_key].keys())
+            sample = {c: TABLE_SPECS[table_key][c].example for c in cols}
+            csv_blob = pd.DataFrame([sample], columns=cols).to_csv(index=False).encode()
+            st.download_button(f"Download {fname}", data=csv_blob, file_name=fname, mime="text/csv")
+    else:
+        render_docs_page("faq.md")
+
 
 st.caption("All data stored locally in SQLite planner.db")
