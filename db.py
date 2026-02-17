@@ -354,6 +354,147 @@ MIGRATIONS: list[tuple[int, str]] = [
         PRAGMA foreign_keys=ON;
         """,
     ),
+    (
+        6,
+        """
+        PRAGMA foreign_keys=OFF;
+
+        CREATE TABLE IF NOT EXISTS suppliers (
+            supplier_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_code TEXT NOT NULL UNIQUE,
+            supplier_name TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO suppliers (supplier_code, supplier_name)
+        VALUES ('DEFAULT', 'Default Supplier');
+
+        ALTER TABLE sku_master RENAME TO sku_master_old;
+        CREATE TABLE sku_master (
+            sku_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_number TEXT NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            description TEXT,
+            default_coo TEXT NOT NULL,
+            UNIQUE(part_number, supplier_id),
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(supplier_id)
+        );
+        INSERT INTO sku_master (part_number, supplier_id, description, default_coo)
+        SELECT old.part_number, s.supplier_id, old.description, old.default_coo
+        FROM sku_master_old old
+        CROSS JOIN suppliers s
+        WHERE s.supplier_code = 'DEFAULT';
+        DROP TABLE sku_master_old;
+
+        ALTER TABLE packaging_rules RENAME TO packaging_rules_old;
+        CREATE TABLE packaging_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_id INTEGER NOT NULL,
+            pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+            is_default INTEGER NOT NULL DEFAULT 1,
+            units_per_pack REAL NOT NULL,
+            kg_per_unit REAL NOT NULL,
+            pack_tare_kg REAL NOT NULL,
+            pack_length_m REAL NOT NULL,
+            pack_width_m REAL NOT NULL,
+            pack_height_m REAL NOT NULL,
+            min_order_packs INTEGER NOT NULL DEFAULT 1,
+            increment_packs INTEGER NOT NULL DEFAULT 1,
+            stackable INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(sku_id, pack_type),
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+        );
+        INSERT INTO packaging_rules (
+            id, sku_id, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+            pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable
+        )
+        SELECT
+            p.id,
+            s.sku_id,
+            p.pack_type,
+            p.is_default,
+            p.units_per_pack,
+            p.kg_per_unit,
+            p.pack_tare_kg,
+            p.pack_length_m,
+            p.pack_width_m,
+            p.pack_height_m,
+            p.min_order_packs,
+            p.increment_packs,
+            p.stackable
+        FROM packaging_rules_old p
+        JOIN sku_master s ON s.part_number = p.part_number
+        JOIN suppliers sup ON sup.supplier_id = s.supplier_id
+        WHERE sup.supplier_code = 'DEFAULT';
+        DROP TABLE packaging_rules_old;
+
+        ALTER TABLE demand_lines RENAME TO demand_lines_old;
+        CREATE TABLE demand_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_id INTEGER NOT NULL,
+            need_date TEXT NOT NULL,
+            qty REAL NOT NULL,
+            coo_override TEXT,
+            priority TEXT,
+            notes TEXT,
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+        );
+        INSERT INTO demand_lines (id, sku_id, need_date, qty, coo_override, priority, notes)
+        SELECT
+            d.id,
+            s.sku_id,
+            d.need_date,
+            d.qty,
+            d.coo_override,
+            d.priority,
+            d.notes
+        FROM demand_lines_old d
+        JOIN sku_master s ON s.part_number = d.part_number
+        JOIN suppliers sup ON sup.supplier_id = s.supplier_id
+        WHERE sup.supplier_code = 'DEFAULT';
+        DROP TABLE demand_lines_old;
+
+        ALTER TABLE lead_time_overrides RENAME TO lead_time_overrides_old;
+        CREATE TABLE lead_time_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku_id INTEGER NOT NULL,
+            mode TEXT NOT NULL,
+            lead_days INTEGER NOT NULL,
+            UNIQUE(sku_id, mode),
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+        );
+        INSERT INTO lead_time_overrides (id, sku_id, mode, lead_days)
+        SELECT
+            o.id,
+            s.sku_id,
+            o.mode,
+            o.lead_days
+        FROM lead_time_overrides_old o
+        JOIN sku_master s ON s.part_number = o.part_number
+        JOIN suppliers sup ON sup.supplier_id = s.supplier_id
+        WHERE sup.supplier_code = 'DEFAULT';
+        DROP TABLE lead_time_overrides_old;
+
+        ALTER TABLE tranche_allocations RENAME TO tranche_allocations_old;
+        CREATE TABLE tranche_allocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            demand_line_id INTEGER NOT NULL,
+            tranche_name TEXT NOT NULL,
+            allocation_type TEXT NOT NULL,
+            allocation_value REAL NOT NULL,
+            manual_lead_override INTEGER,
+            manual_mode_override TEXT,
+            FOREIGN KEY (demand_line_id) REFERENCES demand_lines(id)
+        );
+        INSERT INTO tranche_allocations (
+            id, demand_line_id, tranche_name, allocation_type, allocation_value, manual_lead_override, manual_mode_override
+        )
+        SELECT
+            id, demand_line_id, tranche_name, allocation_type, allocation_value, manual_lead_override, manual_mode_override
+        FROM tranche_allocations_old;
+        DROP TABLE tranche_allocations_old;
+
+        PRAGMA foreign_keys=ON;
+        """,
+    ),
 ]
 
 
@@ -453,6 +594,7 @@ def delete_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_co
 
 EXPORT_TABLE_ORDER = [
     "equipment_presets",
+    "suppliers",
     "sku_master",
     "packaging_rules",
     "lead_times",
@@ -467,15 +609,16 @@ EXPORT_TABLE_ORDER = [
 
 TABLE_KEY_COLS: dict[str, list[str]] = {
     "equipment_presets": ["name"],
-    "sku_master": ["part_number"],
-    "packaging_rules": ["part_number", "pack_type"],
+    "suppliers": ["supplier_code"],
+    "sku_master": ["part_number", "supplier_id"],
+    "packaging_rules": ["sku_id", "pack_type"],
     "lead_times": ["country_of_origin", "mode"],
-    "lead_time_overrides": ["part_number", "mode"],
+    "lead_time_overrides": ["sku_id", "mode"],
     "rates": ["mode", "pricing_model", "origin", "destination", "equipment_name", "effective_start", "effective_end"],
     "carrier": ["code"],
     "rate_card": ["mode", "service_scope", "equipment", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "effective_to", "carrier_id"],
     "rate_charge": ["rate_card_id", "charge_code", "charge_name", "calc_method", "effective_from", "effective_to"],
-    "demand_lines": ["part_number", "need_date", "qty", "notes"],
+    "demand_lines": ["sku_id", "need_date", "qty", "notes"],
     "tranche_allocations": ["demand_line_id", "tranche_name", "allocation_type"],
 }
 
@@ -487,6 +630,7 @@ def _query_map_for_profile(profile: str) -> dict[str, str]:
     if profile == "recent":
         return {
             "equipment_presets": "SELECT * FROM equipment_presets",
+            "suppliers": "SELECT * FROM suppliers",
             "sku_master": "SELECT * FROM sku_master",
             "packaging_rules": "SELECT * FROM packaging_rules",
             "lead_times": "SELECT * FROM lead_times",
