@@ -5,12 +5,12 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Any
 
+from constraints_engine import max_units_per_conveyance
 from fit_engine import (
     equipment_capacity,
     equipment_count_for_packs,
     pack_gross_kg,
     pack_volume_m3,
-    packs_per_equipment,
     required_shipped_units,
     utilization,
 )
@@ -72,6 +72,8 @@ def plan_quick_run(
     lane_dest_code: str | None,
     service_scope: str | None,
     modes: list[str] | None,
+    jurisdiction_code: str | None = None,
+    truck_config_code: str | None = None,
 ) -> dict:
     sku_row = conn.execute(
         """
@@ -136,6 +138,29 @@ def plan_quick_run(
     charges = [dict(r) for r in conn.execute("SELECT * FROM rate_charge").fetchall()]
     rates = [dict(r) for r in conn.execute("SELECT * FROM rates").fetchall()]
 
+    selected_jurisdiction = (jurisdiction_code or "US_FED_INTERSTATE").strip().upper()
+    selected_truck_config = (truck_config_code or "5AXLE_TL").strip().upper()
+
+    jurisdiction_rule = conn.execute(
+        "SELECT * FROM jurisdiction_weight_rules WHERE jurisdiction_code = ? AND active = 1",
+        (selected_jurisdiction,),
+    ).fetchone()
+    if not jurisdiction_rule:
+        jurisdiction_rule = conn.execute(
+            "SELECT * FROM jurisdiction_weight_rules WHERE jurisdiction_code = 'US_FED_INTERSTATE' AND active = 1"
+        ).fetchone()
+
+    truck_config = conn.execute(
+        "SELECT * FROM truck_configs WHERE truck_config_code = ? AND active = 1",
+        (selected_truck_config,),
+    ).fetchone()
+    truck_warning = None
+    if not truck_config:
+        truck_warning = "Truck config missing; using conservative default 5AXLE_TL assumptions."
+        truck_config = conn.execute(
+            "SELECT * FROM truck_configs WHERE truck_config_code = '5AXLE_TL' AND active = 1"
+        ).fetchone()
+
     for eq_row in eq_rows:
         eq = dict(eq_row)
         mode = norm_mode(eq.get("mode"))
@@ -155,8 +180,19 @@ def plan_quick_run(
             continue
 
         try:
-            fit = packs_per_equipment(pack_rule, eq)
-            packs_fit = int(fit["packs_fit"])
+            fit = max_units_per_conveyance(
+                sku_id=sku_id,
+                pack_rule=pack_rule,
+                equipment=eq,
+                context={
+                    "jurisdiction_code": selected_jurisdiction,
+                    "truck_config_code": selected_truck_config,
+                    "jurisdiction_rule": dict(jurisdiction_rule) if jurisdiction_rule else {},
+                    "truck_config": dict(truck_config) if truck_config else {},
+                    "container_on_chassis": mode in {"TRUCK", "DRAY"},
+                },
+            )
+            packs_fit = int(fit["max_units"])
             caps = equipment_capacity(eq)
         except ValueError as exc:
             excluded_equipment.append(
@@ -261,6 +297,8 @@ def plan_quick_run(
                 "packs_per_layer": fit["packs_per_layer"],
                 "layers_allowed": fit["layers_allowed"],
                 "packs_fit": packs_fit,
+                "limiting_constraint": fit.get("limiting_constraint"),
+                "constraint_breakdown": fit.get("breakdown", []),
                 "equipment_count": equipment_count,
                 "cube_util": util["cube_util"],
                 "weight_util": util["weight_util"],
@@ -318,4 +356,5 @@ def plan_quick_run(
         "mode_summary": mode_summary,
         "rate_breakdown": rate_breakdown,
         "excluded_equipment": sorted(excluded_equipment, key=lambda r: (r["mode"], r.get("equipment_code") or "", r["equipment_name"] or "")),
+        "warnings": [w for w in [truck_warning] if w],
     }

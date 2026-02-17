@@ -58,7 +58,16 @@ if lane_choice != "(none)":
     lane_origin, lane_dest = [x.strip() for x in lane_choice.split("->")]
 
 service_scope = st.selectbox("Service scope", ["P2P", "P2D", "D2P", "D2D"], index=0)
-modes = st.multiselect("Mode filter", ["AIR", "OCEAN", "TRUCK"], default=["AIR", "OCEAN", "TRUCK"])
+modes = st.multiselect("Mode filter", ["AIR", "OCEAN", "TRUCK", "DRAY"], default=["AIR", "OCEAN", "TRUCK"])
+
+juris_df = pd.read_sql_query("SELECT jurisdiction_code FROM jurisdiction_weight_rules WHERE active = 1 ORDER BY jurisdiction_code", conn)
+juris_options = juris_df["jurisdiction_code"].tolist() if not juris_df.empty else ["US_FED_INTERSTATE"]
+jurisdiction_code = st.selectbox("Jurisdiction", juris_options, index=juris_options.index("US_FED_INTERSTATE") if "US_FED_INTERSTATE" in juris_options else 0)
+
+truck_df = pd.read_sql_query("SELECT truck_config_code, description FROM truck_configs WHERE active = 1 ORDER BY truck_config_code", conn)
+truck_options = [f"{r['truck_config_code']} - {r['description']}" for _, r in truck_df.iterrows()] if not truck_df.empty else ["5AXLE_TL - default"]
+truck_choice = st.selectbox("Truck/Chassis Config", truck_options, index=0)
+truck_config_code = truck_choice.split(" - ")[0]
 
 if st.button("Run Plan", type="primary"):
     result = plan_quick_run(
@@ -72,6 +81,8 @@ if st.button("Run Plan", type="primary"):
         lane_dest_code=lane_dest,
         service_scope=service_scope,
         modes=modes,
+        jurisdiction_code=jurisdiction_code,
+        truck_config_code=truck_config_code,
     )
 
     sku = result["sku"]
@@ -88,10 +99,22 @@ if st.button("Run Plan", type="primary"):
         eq_df["weight_util%"] = (eq_df["weight_util"] * 100).round(1)
         st.subheader("Equipment fit")
         st.dataframe(
-            eq_df[["mode", "equipment_code", "equipment_name", "packs_per_layer", "layers_allowed", "packs_fit", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
+            eq_df[["mode", "equipment_code", "equipment_name", "packs_per_layer", "layers_allowed", "packs_fit", "limiting_constraint", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
             width="stretch",
             hide_index=True,
         )
+
+
+
+    if result.get("warnings"):
+        for w in result["warnings"]:
+            st.warning(w)
+
+    if not eq_df.empty:
+        st.subheader("Constraint breakdown")
+        for _, row in eq_df.iterrows():
+            with st.expander(f"{row['equipment_code']} / {row['equipment_name']}", expanded=False):
+                st.json(row.get("constraint_breakdown", []))
 
     excluded_df = pd.DataFrame(result.get("excluded_equipment", []))
     if not excluded_df.empty:

@@ -24,7 +24,7 @@ def seed_if_empty() -> None:
                 ("CNT_40_DRY_STD", "40' Dry (STD)", "OCEAN", "CONTAINER", 12.03, 2.35, 2.39, 12.03, 2.35, 2.39, 26700, None, 0, 0, 1, None),
                 ("CNT_40_DRY_HC", "40' Dry (High Cube)", "OCEAN", "CONTAINER", 12.03, 2.352, 2.698, 12.03, 2.352, 2.698, 26540, None, 0, 1, 1, "40ft high cube dry"),
                 ("CNT_20_RF", "20' Reefer", "OCEAN", "CONTAINER", 5.44, 2.29, 2.26, 5.44, 2.29, 2.26, 21100, None, 1, 0, 1, "temp controlled"),
-                ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.58, 2.29, 2.26, 11.58, 2.29, 2.26, 27500, None, 1, 0, 1, "temp controlled"),
+                ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.588, 2.280, 2.255, 11.588, 2.280, 2.255, 29580, None, 1, 0, 1, "temp controlled"),
                 ("CNT_49_STD", "49' Standard (User-defined)", "OCEAN", "CONTAINER", 14.93, 2.50, 2.70, 14.93, 2.50, 2.70, 19500, None, 0, 0, 1, "user-defined 49ft standard"),
                 ("AIR_STD", "Air Freight (Chargeable Weight)", "AIR", "ULD", 1, 1, 1, 1, 1, 1, 50000, 167.0, 0, 0, 1, "volumetric factor kg/m3 configurable"),
             ],

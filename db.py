@@ -911,7 +911,7 @@ def _migration_15_canonical_equipment_codes(conn: sqlite3.Connection) -> None:
         ("CNT_40_DRY_STD", "40' Dry (STD)", "OCEAN", "CONTAINER", 12.03, 2.35, 2.39, 26700.0, 0, 0, 1, None, None),
         ("CNT_40_DRY_HC", "40' Dry (High Cube)", "OCEAN", "CONTAINER", 12.03, 2.352, 2.698, 26540.0, 0, 1, 1, None, "40ft high cube dry"),
         ("CNT_20_RF", "20' Reefer", "OCEAN", "CONTAINER", 5.44, 2.29, 2.26, 21100.0, 1, 0, 1, None, "temp controlled"),
-        ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.58, 2.29, 2.26, 27500.0, 1, 0, 1, None, "temp controlled"),
+        ("CNT_40_RF", "40' Reefer", "OCEAN", "CONTAINER", 11.588, 2.280, 2.255, 29580.0, 1, 0, 1, None, "temp controlled"),
         ("CNT_49_STD", "49' Standard (User-defined)", "OCEAN", "CONTAINER", 14.93, 2.50, 2.70, 19500.0, 0, 0, 1, None, "user-defined 49ft standard"),
         ("AIR_STD", "Air Freight (Chargeable Weight)", "AIR", "ULD", 1.0, 1.0, 1.0, 50000.0, 0, 0, 1, 167.0, "volumetric factor kg/m3 configurable"),
     ]
@@ -1044,6 +1044,108 @@ def _migration_15_canonical_equipment_codes(conn: sqlite3.Connection) -> None:
 
 
 MIGRATIONS.append((15, _migration_15_canonical_equipment_codes))
+
+
+def _migration_16_legal_constraints(conn: sqlite3.Connection) -> None:
+    eq_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='equipment_presets'"
+    ).fetchone()
+    if eq_exists:
+        eq_cols = {row[1] for row in conn.execute("PRAGMA table_info(equipment_presets)").fetchall()}
+        if "tare_kg" not in eq_cols:
+            conn.execute("ALTER TABLE equipment_presets ADD COLUMN tare_kg REAL")
+        if "max_gross_kg" not in eq_cols:
+            conn.execute("ALTER TABLE equipment_presets ADD COLUMN max_gross_kg REAL")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS truck_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            truck_config_code TEXT NOT NULL UNIQUE,
+            description TEXT,
+            steer_axles INTEGER NOT NULL DEFAULT 1,
+            drive_axles INTEGER NOT NULL DEFAULT 2,
+            trailer_axles INTEGER NOT NULL DEFAULT 2,
+            axle_grouping TEXT,
+            axle_span_ft REAL NOT NULL DEFAULT 51.0,
+            tractor_tare_lb REAL NOT NULL DEFAULT 18000,
+            trailer_tare_lb REAL NOT NULL DEFAULT 8000,
+            container_tare_lb REAL NOT NULL DEFAULT 0,
+            max_gvw_lb REAL NOT NULL DEFAULT 80000,
+            steer_weight_share_pct REAL NOT NULL DEFAULT 0.12,
+            drive_weight_share_pct REAL NOT NULL DEFAULT 0.44,
+            trailer_weight_share_pct REAL NOT NULL DEFAULT 0.44,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS jurisdiction_weight_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            jurisdiction_code TEXT NOT NULL UNIQUE,
+            max_gvw_lb REAL NOT NULL,
+            max_single_axle_lb REAL NOT NULL,
+            max_tandem_lb REAL NOT NULL,
+            notes TEXT,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS permit_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            permit_code TEXT NOT NULL UNIQUE,
+            jurisdiction_code TEXT NOT NULL,
+            max_gvw_lb REAL,
+            max_single_axle_lb REAL,
+            max_tandem_lb REAL,
+            notes TEXT,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE equipment_presets
+        SET tare_kg = COALESCE(tare_kg, 0),
+            max_gross_kg = COALESCE(max_gross_kg, 0)
+        """
+    )
+
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO truck_configs(
+            truck_config_code, description, steer_axles, drive_axles, trailer_axles,
+            axle_grouping, axle_span_ft, tractor_tare_lb, trailer_tare_lb, container_tare_lb,
+            max_gvw_lb, steer_weight_share_pct, drive_weight_share_pct, trailer_weight_share_pct, active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("5AXLE_TL", "5-axle tractor + tandem chassis baseline", 1, 2, 2, "steer-single, drives-tandem, trailer-tandem", 51.0, 18000, 8000, 8500, 80000, 0.12, 0.44, 0.44, 1),
+            ("6AXLE_SUPERCHASSIS", "6-axle super chassis estimate", 1, 3, 2, "steer-single, drives-tridem, trailer-tandem", 56.0, 19000, 9000, 8500, 90000, 0.12, 0.48, 0.40, 1),
+        ],
+    )
+
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO jurisdiction_weight_rules(
+            jurisdiction_code, max_gvw_lb, max_single_axle_lb, max_tandem_lb, notes, active
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("US_FED_INTERSTATE", 80000, 20000, 34000, "FHWA baseline and bridge formula references: https://ops.fhwa.dot.gov/freight/policy/rpt_congress/truck_sw_laws/app_a.htm", 1),
+            ("CA", 80000, 20000, 34000, "Caltrans legal truck loading baseline (chart extensions can be modeled later).", 1),
+            ("TX", 80000, 20000, 34000, "Texas baseline without permit override.", 1),
+            ("TX_PORT_PERMIT", 90000, 22000, 44000, "Estimated intermodal port permit profile; validate route-specific permit terms.", 1),
+        ],
+    )
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO permit_rules(permit_code, jurisdiction_code, max_gvw_lb, max_single_axle_lb, max_tandem_lb, notes, active)
+        VALUES ('TX_INTERMODAL_PORT', 'TX', 90000, 22000, 44000, 'Optional Texas intermodal permit mode (estimated, route dependent).', 1)
+        """
+    )
+
+
+MIGRATIONS.append((16, _migration_16_legal_constraints))
 
 
 def get_conn() -> sqlite3.Connection:
