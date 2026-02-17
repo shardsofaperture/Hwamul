@@ -216,6 +216,103 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_rate_charge_rate_card ON rate_charge(rate_card_id);
         """,
     ),
+    (
+        4,
+        """
+        PRAGMA foreign_keys=OFF;
+
+        ALTER TABLE sku_master RENAME TO sku_master_old;
+        CREATE TABLE sku_master (
+            part_number TEXT PRIMARY KEY,
+            description TEXT,
+            default_coo TEXT NOT NULL
+        );
+        INSERT INTO sku_master (part_number, description, default_coo)
+        SELECT sku, description, default_coo
+        FROM sku_master_old;
+        DROP TABLE sku_master_old;
+
+        ALTER TABLE packaging_rules RENAME TO packaging_rules_old;
+        CREATE TABLE packaging_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_number TEXT NOT NULL,
+            pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+            is_default INTEGER NOT NULL DEFAULT 1,
+            units_per_pack REAL NOT NULL,
+            kg_per_unit REAL NOT NULL,
+            pack_tare_kg REAL NOT NULL,
+            pack_length_m REAL NOT NULL,
+            pack_width_m REAL NOT NULL,
+            pack_height_m REAL NOT NULL,
+            min_order_packs INTEGER NOT NULL DEFAULT 1,
+            increment_packs INTEGER NOT NULL DEFAULT 1,
+            stackable INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(part_number, pack_type),
+            FOREIGN KEY (part_number) REFERENCES sku_master(part_number)
+        );
+        INSERT INTO packaging_rules (
+            id,
+            part_number,
+            pack_type,
+            is_default,
+            units_per_pack,
+            kg_per_unit,
+            pack_tare_kg,
+            pack_length_m,
+            pack_width_m,
+            pack_height_m,
+            min_order_packs,
+            increment_packs,
+            stackable
+        )
+        SELECT
+            id,
+            sku,
+            pack_type,
+            is_default,
+            units_per_pack,
+            kg_per_unit,
+            pack_tare_kg,
+            pack_length_m,
+            pack_width_m,
+            pack_height_m,
+            min_order_packs,
+            increment_packs,
+            stackable
+        FROM packaging_rules_old;
+        DROP TABLE packaging_rules_old;
+
+        ALTER TABLE demand_lines RENAME TO demand_lines_old;
+        CREATE TABLE demand_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_number TEXT NOT NULL,
+            need_date TEXT NOT NULL,
+            qty REAL NOT NULL,
+            coo_override TEXT,
+            priority TEXT,
+            notes TEXT
+        );
+        INSERT INTO demand_lines (id, part_number, need_date, qty, coo_override, priority, notes)
+        SELECT id, sku, need_date, qty, coo_override, priority, notes
+        FROM demand_lines_old;
+        DROP TABLE demand_lines_old;
+
+        ALTER TABLE lead_time_overrides RENAME TO lead_time_overrides_old;
+        CREATE TABLE lead_time_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            part_number TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            lead_days INTEGER NOT NULL,
+            UNIQUE(part_number, mode)
+        );
+        INSERT INTO lead_time_overrides (id, part_number, mode, lead_days)
+        SELECT id, sku, mode, lead_days
+        FROM lead_time_overrides_old;
+        DROP TABLE lead_time_overrides_old;
+
+        PRAGMA foreign_keys=ON;
+        """,
+    ),
 ]
 
 
