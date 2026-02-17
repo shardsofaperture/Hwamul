@@ -16,7 +16,7 @@ from models import (
 
 @dataclass
 class TrancheResult:
-    sku: str
+    part_number: str
     need_date: date
     tranche_name: str
     requested_units: float
@@ -47,7 +47,7 @@ def allocate_tranches(demand_qty: float, rule: PackagingRule, tranches: list[tup
         remaining = max(0.0, remaining - requested)
         rows.append(
             TrancheResult(
-                sku=rule.sku,
+                part_number=rule.part_number,
                 need_date=date.today(),
                 tranche_name=name,
                 requested_units=requested,
@@ -59,16 +59,16 @@ def allocate_tranches(demand_qty: float, rule: PackagingRule, tranches: list[tup
     return rows
 
 
-def lead_days_for(mode: str, coo: str, sku: str, lead_table: dict[tuple[str, str], int], sku_override: dict[tuple[str, str], int], manual_override: int | None = None) -> int:
+def lead_days_for(mode: str, coo: str, part_number: str, lead_table: dict[tuple[str, str], int], part_number_override: dict[tuple[str, str], int], manual_override: int | None = None) -> int:
     if manual_override is not None:
         return manual_override
-    if (sku, mode) in sku_override:
-        return sku_override[(sku, mode)]
+    if (part_number, mode) in part_number_override:
+        return part_number_override[(part_number, mode)]
     return lead_table.get((coo, mode), 999)
 
 
 def recommend_modes(
-    sku: str,
+    part_number: str,
     coo: str,
     need_date: date,
     ordered_units: float,
@@ -76,7 +76,7 @@ def recommend_modes(
     equipment_by_mode: dict[str, list[Equipment]],
     rates: list[dict],
     lead_table: dict[tuple[str, str], int],
-    sku_lead_override: dict[tuple[str, str], int],
+    part_number_lead_override: dict[tuple[str, str], int],
     manual_lead_override: int | None = None,
 ):
     total_weight = (ordered_units / pack_rule.units_per_pack) * pack_rule.gross_pack_weight_kg
@@ -84,7 +84,7 @@ def recommend_modes(
 
     recs = []
     for mode, equipments in equipment_by_mode.items():
-        lead_days = lead_days_for(mode, coo, sku, lead_table, sku_lead_override, manual_lead_override)
+        lead_days = lead_days_for(mode, coo, part_number, lead_table, part_number_lead_override, manual_lead_override)
         ship_by = need_date - timedelta(days=lead_days)
         feasible = lead_days < 900
         cost = 0.0

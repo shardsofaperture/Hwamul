@@ -9,7 +9,7 @@ from models import (
 
 def test_pack_rounding_with_moq_and_increment():
     rule = PackagingRule(
-        sku="S1",
+        part_number="S1",
         units_per_pack=24,
         kg_per_unit=1,
         pack_tare_kg=0.5,

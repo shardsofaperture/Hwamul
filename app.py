@@ -105,13 +105,13 @@ if section == "Admin":
         filtered_source = source[source.astype(str).apply(lambda c: c.str.contains(q, case=False, na=False)).any(axis=1)] if q else source
         edited = st.data_editor(filtered_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_sku"):
-            errors = require_cols(edited, ["sku", "default_coo"])
+            errors = require_cols(edited, ["part_number", "default_coo"])
             if errors:
                 st.error("; ".join(errors))
             else:
                 # When search is active, only persist edits for the visible slice.
                 # Diffing against the full table would treat hidden rows as deletions.
-                ok, err = save_grid("sku_master", filtered_source, edited, ["sku"])
+                ok, err = save_grid("sku_master", filtered_source, edited, ["part_number"])
                 if ok:
                     st.success("SKUs saved")
                     st.rerun()
@@ -122,8 +122,8 @@ if section == "Admin":
         source = read_table("packaging_rules")
         edited = st.data_editor(source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_pack"):
-            errors = require_cols(edited, ["sku", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
-            defaults = edited.groupby("sku")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
+            errors = require_cols(edited, ["part_number", "pack_type"]) + validate_positive(edited, ["units_per_pack", "pack_length_m", "pack_width_m", "pack_height_m"]) + validate_positive(edited, ["kg_per_unit", "pack_tare_kg"], allow_zero=True)
+            defaults = edited.groupby("part_number")["is_default"].sum() if not edited.empty else pd.Series(dtype=int)
             if not defaults.empty and (defaults < 1).any():
                 errors.append("Each SKU must have at least one default pack type")
             if errors:
@@ -141,7 +141,7 @@ if section == "Admin":
         ov_source = read_table("lead_time_overrides")
         ov_edited = st.data_editor(ov_source, num_rows="dynamic", width="stretch")
         if st.button("Save changes", key="save_lead"):
-            errors = require_cols(lt_edited, ["country_of_origin", "mode", "lead_days"]) + require_cols(ov_edited, ["sku", "mode", "lead_days"]) + validate_positive(lt_edited, ["lead_days"], allow_zero=True) + validate_positive(ov_edited, ["lead_days"], allow_zero=True)
+            errors = require_cols(lt_edited, ["country_of_origin", "mode", "lead_days"]) + require_cols(ov_edited, ["part_number", "mode", "lead_days"]) + validate_positive(lt_edited, ["lead_days"], allow_zero=True) + validate_positive(ov_edited, ["lead_days"], allow_zero=True)
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -304,7 +304,7 @@ if section == "Admin":
             st.success("Pasted rows appended")
 
         if st.button("Save changes", key="save_demand"):
-            errors = require_cols(edited, ["sku", "need_date", "qty"]) + validate_positive(edited, ["qty"], allow_zero=True) + validate_dates(edited, ["need_date"])
+            errors = require_cols(edited, ["part_number", "need_date", "qty"]) + validate_positive(edited, ["qty"], allow_zero=True) + validate_dates(edited, ["need_date"])
             if errors:
                 st.error("; ".join(errors))
             else:
@@ -325,8 +325,8 @@ else:
         else:
             line = st.selectbox("Demand line", demands["id"].tolist())
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["sku"] == d["sku"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku"] == d["sku"]].iloc[0]
+            pack_rows = packs[(packs["part_number"] == d["part_number"]) & (packs["is_default"] == 1)]
+            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["part_number"] == d["part_number"]].iloc[0]
             rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
 
             st.write("Define tranches")
@@ -358,20 +358,20 @@ else:
         if not demands.empty and not packs.empty and not eq.empty:
             line = st.selectbox("Line for recommendation", demands["id"].tolist(), key="rec_line")
             d = demands[demands["id"] == line].iloc[0]
-            pack_rows = packs[(packs["sku"] == d["sku"]) & (packs["is_default"] == 1)]
-            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["sku"] == d["sku"]].iloc[0]
+            pack_rows = packs[(packs["part_number"] == d["part_number"]) & (packs["is_default"] == 1)]
+            p = pack_rows.iloc[0] if not pack_rows.empty else packs[packs["part_number"] == d["part_number"]].iloc[0]
             rule = PackagingRule(**{k: p[k] for k in PackagingRule.__dataclass_fields__.keys()})
             need_date = pd.to_datetime(d["need_date"]).date()
-            coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("sku").loc[d["sku"], "default_coo"]
+            coo = d["coo_override"] if pd.notna(d["coo_override"]) else read_table("sku_master").set_index("part_number").loc[d["part_number"], "default_coo"]
 
             eq_by_mode: dict[str, list[Equipment]] = {}
             for mode, g in eq.groupby("mode"):
                 eq_by_mode[mode] = [equipment_from_row(x) for x in g.to_dict("records")]
 
             lead_tbl = {(r["country_of_origin"], r["mode"]): int(r["lead_days"]) for _, r in lead.iterrows()}
-            sku_ov = {(r["sku"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
+            part_number_ov = {(r["part_number"], r["mode"]): int(r["lead_days"]) for _, r in lead_ov.iterrows()}
             recs = recommend_modes(
-                sku=d["sku"],
+                part_number=d["part_number"],
                 coo=coo,
                 need_date=need_date,
                 ordered_units=d["qty"],
@@ -379,7 +379,7 @@ else:
                 equipment_by_mode=eq_by_mode,
                 rates=rates.to_dict("records"),
                 lead_table=lead_tbl,
-                sku_lead_override=sku_ov,
+                part_number_lead_override=part_number_ov,
                 manual_lead_override=st.number_input("Manual lead override", min_value=0, value=0),
             )
             st.dataframe(pd.DataFrame(recs), width="stretch")
@@ -407,7 +407,7 @@ else:
         st.subheader("Export reports")
         demand = read_table("demand_lines")
         booking = read_table("rates")
-        excess = pd.DataFrame(columns=["sku", "tranche", "excess_units"])
+        excess = pd.DataFrame(columns=["part_number", "tranche", "excess_units"])
 
         def dl(df: pd.DataFrame, name: str):
             st.download_button(name, data=df.to_csv(index=False).encode(), file_name=name, mime="text/csv")

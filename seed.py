@@ -48,7 +48,7 @@ def seed_if_empty() -> None:
             ],
         )
         conn.executemany(
-            "INSERT INTO sku_master(sku, description, default_coo) VALUES (?,?,?)",
+            "INSERT INTO sku_master(part_number, description, default_coo) VALUES (?,?,?)",
             [
                 ("SKU-100", "Sample Widget", "CN"),
                 ("SKU-200", "Sample Gizmo", "MX"),
@@ -57,7 +57,7 @@ def seed_if_empty() -> None:
         conn.executemany(
             """
             INSERT INTO packaging_rules
-            (sku, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable)
+            (part_number, units_per_pack, kg_per_unit, pack_tare_kg, pack_length_m, pack_width_m, pack_height_m, min_order_packs, increment_packs, stackable)
             VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             [
@@ -71,8 +71,8 @@ def ensure_templates() -> None:
     template_dir = Path("templates")
     template_dir.mkdir(exist_ok=True)
     (template_dir / "demand_template.csv").write_text(
-        "sku,need_date,qty,coo_override,priority,notes\nSKU-100,2026-03-10,250,,High,launch\n"
+        "part_number,need_date,qty,coo_override,priority,notes\nSKU-100,2026-03-10,250,,High,launch\n"
     )
     (template_dir / "bom_template.csv").write_text(
-        "sku,need_date,qty\nSKU-200,2026-03-17,96\n"
+        "part_number,need_date,qty\nSKU-200,2026-03-17,96\n"
     )

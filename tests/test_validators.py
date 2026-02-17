@@ -4,8 +4,8 @@ from validators import require_cols, validate_dates, validate_positive
 
 
 def test_require_cols_flags_missing_or_blank():
-    df = pd.DataFrame([{"sku": "A", "default_coo": ""}])
-    assert require_cols(df, ["sku", "default_coo", "description"]) == ["default_coo", "description"]
+    df = pd.DataFrame([{"part_number": "A", "default_coo": ""}])
+    assert require_cols(df, ["part_number", "default_coo", "description"]) == ["default_coo", "description"]
 
 
 def test_validate_positive_rules():

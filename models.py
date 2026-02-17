@@ -7,7 +7,7 @@ from math import ceil
 
 @dataclass
 class PackagingRule:
-    sku: str
+    part_number: str
     units_per_pack: float
     kg_per_unit: float
     pack_tare_kg: float
