@@ -1413,6 +1413,28 @@ def resolve_pack_rule_for_demand(conn: sqlite3.Connection, demand_line: sqlite3.
     return select_default_pack_rule(conn, int(demand_line["sku_id"]))
 
 
+def get_pack_rules_for_sku(conn: sqlite3.Connection, sku_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM packaging_rules
+        WHERE sku_id = ?
+        ORDER BY is_default DESC, id ASC
+        """,
+        (int(sku_id),),
+    ).fetchall()
+
+
+def get_equipment_by_code(conn: sqlite3.Connection, equipment_code: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM equipment_presets
+        WHERE active = 1 AND UPPER(TRIM(COALESCE(equipment_code, ''))) = UPPER(TRIM(?))
+        LIMIT 1
+        """,
+        (equipment_code,),
+    ).fetchone()
+
+
 def normalize_pack_dimension_to_meters(value: float | int | None) -> float | None:
     """Normalize a pack dimension input to meters.
 
