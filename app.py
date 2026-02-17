@@ -83,6 +83,7 @@ if section == "Admin":
                 # Diffing against the full table would treat hidden rows as deletions.
                 save_grid("sku_master", filtered_source, edited, ["sku"])
                 st.success("SKUs saved")
+                st.rerun()
 
     elif admin_screen == "Pack rules":
         source = read_table("packaging_rules")
