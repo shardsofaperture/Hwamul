@@ -113,8 +113,17 @@ def plan_quick_run(
 
     requested_modes = {norm_mode(m) for m in (modes or []) if norm_mode(m)}
     eq_rows = conn.execute("SELECT * FROM equipment_presets").fetchall()
+    try:
+        restriction_rows = conn.execute(
+            "SELECT equipment_id, allowed FROM sku_equipment_rules WHERE sku_id = ?",
+            (sku_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        restriction_rows = []
+    restrictions = {int(r["equipment_id"]): int(r["allowed"]) for r in restriction_rows}
 
     equipment_results: list[dict[str, Any]] = []
+    excluded_equipment: list[dict[str, Any]] = []
     mode_rollup: dict[str, dict[str, Any]] = {}
     rate_breakdown: dict[str, list[dict[str, Any]]] = {}
     need_dt = date.fromisoformat(need_date)
@@ -129,11 +138,33 @@ def plan_quick_run(
         if requested_modes and mode not in requested_modes:
             continue
 
-        fit = packs_per_equipment(pack_rule, eq)
-        packs_fit = int(fit["packs_fit"])
+        eq_allowed = bool(restrictions.get(int(eq.get("id")), 1)) if restrictions else True
+        if not eq_allowed:
+            excluded_equipment.append(
+                {
+                    "mode": mode,
+                    "equipment_name": eq.get("name"),
+                    "reason": "Disallowed by SKU conveyance restrictions",
+                }
+            )
+            continue
+
+        try:
+            fit = packs_per_equipment(pack_rule, eq)
+            packs_fit = int(fit["packs_fit"])
+            caps = equipment_capacity(eq)
+        except ValueError as exc:
+            excluded_equipment.append(
+                {
+                    "mode": mode,
+                    "equipment_name": eq.get("name"),
+                    "reason": str(exc),
+                }
+            )
+            continue
+
         equipment_count = equipment_count_for_packs(packs_required, packs_fit)
 
-        caps = equipment_capacity(eq)
         util = utilization(
             packs_required,
             packs_fit,
@@ -219,6 +250,8 @@ def plan_quick_run(
             {
                 "mode": mode,
                 "equipment_name": eq.get("name"),
+                "packs_per_layer": fit["packs_per_layer"],
+                "layers_allowed": fit["layers_allowed"],
                 "packs_fit": packs_fit,
                 "equipment_count": equipment_count,
                 "cube_util": util["cube_util"],
@@ -276,4 +309,5 @@ def plan_quick_run(
         "equipment": equipment_results,
         "mode_summary": mode_summary,
         "rate_breakdown": rate_breakdown,
+        "excluded_equipment": sorted(excluded_equipment, key=lambda r: (r["mode"], r["equipment_name"] or "")),
     }

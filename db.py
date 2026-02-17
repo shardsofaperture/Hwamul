@@ -36,6 +36,9 @@ MIGRATIONS: list[tuple[int, str | Callable[[sqlite3.Connection], None]]] = [
             length_m REAL,
             width_m REAL,
             height_m REAL,
+            internal_length_m REAL,
+            internal_width_m REAL,
+            internal_height_m REAL,
             max_payload_kg REAL,
             volumetric_factor REAL,
             optional_constraints TEXT
@@ -814,6 +817,72 @@ def _migration_13_sku_logistics_profile(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((13, _migration_13_sku_logistics_profile))
 
 
+def _migration_14_equipment_internal_dims_and_rules(conn: sqlite3.Connection) -> None:
+    eq_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='equipment_presets'"
+    ).fetchone()
+    if not eq_exists:
+        return
+
+    eq_cols = {row[1] for row in conn.execute("PRAGMA table_info(equipment_presets)").fetchall()}
+    if "internal_length_m" not in eq_cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN internal_length_m REAL")
+    if "internal_width_m" not in eq_cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN internal_width_m REAL")
+    if "internal_height_m" not in eq_cols:
+        conn.execute("ALTER TABLE equipment_presets ADD COLUMN internal_height_m REAL")
+
+    conn.execute(
+        """
+        UPDATE equipment_presets
+        SET internal_length_m = COALESCE(NULLIF(internal_length_m, 0), length_m),
+            internal_width_m = COALESCE(NULLIF(internal_width_m, 0), width_m),
+            internal_height_m = COALESCE(NULLIF(internal_height_m, 0), height_m)
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sku_equipment_rules (
+            sku_id INTEGER NOT NULL,
+            equipment_id INTEGER NOT NULL,
+            allowed INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(sku_id, equipment_id),
+            FOREIGN KEY(sku_id) REFERENCES sku_master(sku_id) ON DELETE CASCADE,
+            FOREIGN KEY(equipment_id) REFERENCES equipment_presets(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    required_presets = [
+        ("AIR", "AIR", 1.0, 1.0, 1.0, 50000.0, 167.0, "volumetric factor kg/m3 configurable"),
+        ("53_TRAILER", "TRUCK", 16.15, 2.59, 2.70, 20000.0, None, "domestic dry van"),
+        ("20DRY", "OCEAN", 5.90, 2.35, 2.39, 28200.0, None, None),
+        ("40DRY", "OCEAN", 12.03, 2.35, 2.39, 26700.0, None, None),
+        ("20RF", "OCEAN", 5.44, 2.29, 2.26, 21100.0, None, "temp controlled"),
+        ("40RF", "OCEAN", 11.58, 2.29, 2.26, 27500.0, None, "temp controlled"),
+        ("40HC_DRY", "OCEAN", 12.03, 2.352, 2.698, 26540.0, None, "40ft high cube dry"),
+        ("49STD", "TRUCK", 14.93, 2.50, 2.70, 19500.0, None, "user-defined 49ft standard"),
+    ]
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO equipment_presets(
+            name, mode, length_m, width_m, height_m,
+            internal_length_m, internal_width_m, internal_height_m,
+            max_payload_kg, volumetric_factor, optional_constraints
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (name, mode, l, w, h, l, w, h, payload, vf, note)
+            for (name, mode, l, w, h, payload, vf, note) in required_presets
+        ],
+    )
+
+
+MIGRATIONS.append((14, _migration_14_equipment_internal_dims_and_rules))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -913,6 +982,7 @@ def delete_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_co
 
 EXPORT_TABLE_ORDER = [
     "equipment_presets",
+    "sku_equipment_rules",
     "suppliers",
     "sku_master",
     "packaging_rules",
@@ -931,6 +1001,7 @@ EXPORT_TABLE_ORDER = [
 
 TABLE_KEY_COLS: dict[str, list[str]] = {
     "equipment_presets": ["name"],
+    "sku_equipment_rules": ["sku_id", "equipment_id"],
     "suppliers": ["supplier_code"],
     "sku_master": ["part_number", "supplier_id"],
     "packaging_rules": ["sku_id", "pack_name"],
@@ -955,6 +1026,7 @@ def _query_map_for_profile(profile: str) -> dict[str, str]:
     if profile == "recent":
         return {
             "equipment_presets": "SELECT * FROM equipment_presets",
+            "sku_equipment_rules": "SELECT * FROM sku_equipment_rules",
             "suppliers": "SELECT * FROM suppliers",
             "sku_master": "SELECT * FROM sku_master",
             "packaging_rules": "SELECT * FROM packaging_rules",

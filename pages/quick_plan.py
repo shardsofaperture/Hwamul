@@ -88,10 +88,15 @@ if st.button("Run Plan", type="primary"):
         eq_df["weight_util%"] = (eq_df["weight_util"] * 100).round(1)
         st.subheader("Equipment fit")
         st.dataframe(
-            eq_df[["mode", "equipment_name", "packs_fit", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
+            eq_df[["mode", "equipment_name", "packs_per_layer", "layers_allowed", "packs_fit", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
             width="stretch",
             hide_index=True,
         )
+
+    excluded_df = pd.DataFrame(result.get("excluded_equipment", []))
+    if not excluded_df.empty:
+        st.subheader("Excluded equipment")
+        st.dataframe(excluded_df[["mode", "equipment_name", "reason"]], width="stretch", hide_index=True)
 
     mode_df = pd.DataFrame(result["mode_summary"])
     if not mode_df.empty:
