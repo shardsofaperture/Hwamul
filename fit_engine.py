@@ -56,6 +56,36 @@ def required_shipped_units(required_units: float, pack_rule: Any) -> dict:
     }
 
 
+def required_packs_for_kg(required_kg: float, pack_rule: Any) -> dict:
+    """Convert required kilograms into rounded packs using pack rules.
+
+    If kg_per_unit is missing/non-positive we fall back to treating required_kg as
+    units so users can still run a plan with explicit labeling.
+    """
+    required_kg = float(required_kg or 0.0)
+    units_per_pack = float(_value(pack_rule, "units_per_pack", 0.0) or 0.0)
+    kg_per_unit = float(_value(pack_rule, "kg_per_unit", 0.0) or 0.0)
+    if units_per_pack <= 0:
+        raise ValueError("units_per_pack must be greater than 0")
+
+    kg_as_units_mode = kg_per_unit <= 0
+    required_units = required_kg if kg_as_units_mode else (required_kg / kg_per_unit)
+    packs = rounded_order_packs(required_units, pack_rule)
+    shipped_units = packs * units_per_pack
+    shipped_kg = shipped_units if kg_as_units_mode else (shipped_units * kg_per_unit)
+    excess_kg = max(0.0, shipped_kg - required_kg)
+
+    return {
+        "required_kg": required_kg,
+        "required_units": required_units,
+        "packs_required": packs,
+        "shipped_units": shipped_units,
+        "shipped_kg": shipped_kg,
+        "excess_kg": excess_kg,
+        "kg_as_units_mode": kg_as_units_mode,
+    }
+
+
 def _required_positive(value: float, field_name: str, equipment_name: str | None = None) -> float:
     if value <= 0:
         target = f" for equipment '{equipment_name}'" if equipment_name else ""
@@ -132,12 +162,14 @@ def packs_per_equipment(pack_rule: Any, equipment: Any) -> dict:
     by_grid = int(per_layer * layers)
     by_weight = floor(max_payload_kg / pgross)
     packs_fit = max(0, int(min(by_grid, by_weight)))
+    limiting_constraint = "FLOOR_OR_HEIGHT" if by_grid < by_weight else "PAYLOAD"
     return {
         "packs_per_layer": per_layer,
         "layers_allowed": layers,
         "by_grid": by_grid,
         "by_weight": by_weight,
         "packs_fit": packs_fit,
+        "limiting_constraint": limiting_constraint,
     }
 
 
