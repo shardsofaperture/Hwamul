@@ -1,6 +1,14 @@
 # Hwamul Logistics Planner
 
-Local Streamlit app for supplier-specific logistics planning, rate management, and shipment recommendation.
+Local-first Streamlit application for supplier-specific logistics planning, rate management, shipment recommendation, and customs tracking.
+
+## What this app helps you do
+- Maintain supplier-specific SKU masters and packaging rules.
+- Plan inbound demand by lead time + rate assumptions.
+- Build shipment recommendations and simple consolidation previews.
+- Manage carriers, rate cards, and charge structures.
+- Track customs / HTS tariff attributes across effective dates.
+- Export planning snapshots and import/export full data bundles.
 
 ## Run locally
 ```bash
@@ -10,27 +18,50 @@ pip install -r requirements-dev.txt
 streamlit run app.py
 ```
 
-## Quick Start (in-app configuration from scratch)
-Use the left sidebar and complete this order:
+## First-time setup checklist (UI)
+Use the sidebar in this order for a clean initial setup:
 
-1. **Admin → Suppliers**: create supplier codes/names.
-2. **Admin → SKUs**: create supplier-specific SKUs (`part_number + supplier_id`).
-3. **Admin → Pack rules**: add pack rules per SKU, with one default rule.
-4. **Admin → Lead times**: maintain COO+mode lead days and optional SKU overrides.
-5. **Admin → Carriers** then **Admin → Rate cards**: define rate cards and charges.
-6. **Admin → Demand entry**: enter demand rows (`sku_id`, `need_date`, `qty`) or import CSV.
-7. **Planner** tabs: run allocation, recommendations, shipment builder, and exports.
+1. **Admin → Suppliers**
+   - Add each supplier using `supplier_code` + `supplier_name`.
+2. **Admin → SKUs**
+   - Add supplier-specific SKUs (`part_number + supplier_id`).
+3. **Admin → Pack rules**
+   - Add at least one default packing rule for each SKU.
+4. **Admin → Lead times**
+   - Enter baseline COO + mode lead times (optionally SKU overrides).
+5. **Admin → Carriers**
+   - Create carrier records before building rate cards.
+6. **Admin → Rate cards** and **Admin → Rates**
+   - Define dated pricing and charges by lane/scope/equipment.
+7. **Admin → Customs / HTS**
+   - Enter HTS, tariff, section flags, and documentation requirements.
+8. **Admin → Demand entry**
+   - Enter rows manually or import demand CSV.
+9. **Planner tabs**
+   - Run allocation, recommendations, shipment building, and exports.
 
-The app now includes an in-app **Docs** section with setup guidance, data model, rates guide, templates, and FAQ.
-It also supports **Customs / HTS** administration for tracking HTS codes, tariff rates, section flags, and documentation requirements over time.
+## Built-in docs map
+Open **Docs** in-app for operator guidance:
+- **Quick Start**: setup sequence and day-one workflow.
+- **Data Model**: core tables and relationships.
+- **Rates Guide**: pricing/scopes/accessorial process.
+- **Customs Guide**: HTS/tariff/documentation process.
+- **Import Templates**: downloadable CSV templates.
+- **FAQ/Troubleshooting**: common validation and data issues.
 
-## Optional CSV import workflow
-- Open **Docs → Import Templates** and download generated CSV templates.
-- Fill template rows using examples/field guides.
-- Upload in the matching admin area (demand CSV import is built-in; other templates are for guided bulk prep).
+## CSV template workflow
+1. Open **Docs → Import Templates**.
+2. Download the relevant template.
+3. Populate rows using the examples in the template.
+4. Upload in the matching admin page (demand import is directly available in-app).
+
+## Data storage and portability
+- Data is stored locally in `planner.db`.
+- Use **Admin → Data management** to export/import full data bundles.
+- Use vacuum/purge options as needed to manage local DB size/history.
 
 ## Windows packaging notes
-This repo includes Windows desktop packaging via `launcher.py` + `ProductionPlanner.spec`.
+Desktop packaging is included via `launcher.py` + `ProductionPlanner.spec`.
 
 Build:
 ```bash
@@ -44,7 +75,7 @@ Run packaged app:
 ```
 
 Notes:
-- SQLite path in packaged app: `%APPDATA%\ProductionPlanner\planner.db`.
+- Packaged SQLite path: `%APPDATA%\ProductionPlanner\planner.db`.
 - Requires Edge WebView2 runtime.
 
 ## Tests
