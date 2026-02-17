@@ -724,6 +724,38 @@ def _migration_10_customs_notes_and_references(conn: sqlite3.Connection) -> None
 MIGRATIONS.append((10, _migration_10_customs_notes_and_references))
 
 
+def _migration_11_supplier_plant_and_customs_ship_from(conn: sqlite3.Connection) -> None:
+    suppliers_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='suppliers'"
+    ).fetchone()
+    if suppliers_exists:
+        supplier_cols = {row[1] for row in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+        if "incoterms_ref" not in supplier_cols:
+            conn.execute("ALTER TABLE suppliers ADD COLUMN incoterms_ref TEXT")
+
+    sku_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sku_master'"
+    ).fetchone()
+    if sku_exists:
+        sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(sku_master)").fetchall()}
+        if "plant_code" not in sku_cols:
+            conn.execute("ALTER TABLE sku_master ADD COLUMN plant_code TEXT")
+            conn.execute("UPDATE sku_master SET plant_code = 'GLOBAL' WHERE plant_code IS NULL OR TRIM(plant_code) = ''")
+        if "supplier_duns" not in sku_cols:
+            conn.execute("ALTER TABLE sku_master ADD COLUMN supplier_duns TEXT")
+
+    customs_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='customs_hts_rates'"
+    ).fetchone()
+    if customs_exists:
+        customs_cols = {row[1] for row in conn.execute("PRAGMA table_info(customs_hts_rates)").fetchall()}
+        if "ship_from_country" not in customs_cols:
+            conn.execute("ALTER TABLE customs_hts_rates ADD COLUMN ship_from_country TEXT")
+
+
+MIGRATIONS.append((11, _migration_11_supplier_plant_and_customs_ship_from))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
