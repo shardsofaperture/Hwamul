@@ -592,6 +592,85 @@ def _migration_7_packaging_rules_to_sku_fk(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((7, _migration_7_packaging_rules_to_sku_fk))
 
 
+def _migration_8_supplier_specific_pack_rules(conn: sqlite3.Connection) -> None:
+    """Evolve pack rules for multi-variant supplier-specific workflow."""
+
+    conn.execute("PRAGMA foreign_keys=OFF;")
+    try:
+        conn.executescript(
+            """
+            ALTER TABLE packaging_rules RENAME TO packaging_rules_old;
+            CREATE TABLE packaging_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku_id INTEGER NOT NULL,
+                pack_name TEXT NOT NULL,
+                pack_type TEXT NOT NULL DEFAULT 'STANDARD',
+                is_default INTEGER NOT NULL DEFAULT 0,
+                units_per_pack REAL NOT NULL,
+                kg_per_unit REAL NOT NULL,
+                pack_tare_kg REAL NOT NULL,
+                dim_l_m REAL NOT NULL,
+                dim_w_m REAL NOT NULL,
+                dim_h_m REAL NOT NULL,
+                min_order_packs INTEGER NOT NULL DEFAULT 1,
+                increment_packs INTEGER NOT NULL DEFAULT 1,
+                stackable INTEGER NOT NULL DEFAULT 1,
+                max_stack INTEGER,
+                UNIQUE(sku_id, pack_name),
+                FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO packaging_rules (
+                id, sku_id, pack_name, pack_type, is_default,
+                units_per_pack, kg_per_unit, pack_tare_kg,
+                dim_l_m, dim_w_m, dim_h_m,
+                min_order_packs, increment_packs, stackable
+            )
+            SELECT
+                id,
+                sku_id,
+                COALESCE(NULLIF(pack_type, ''), 'STANDARD') AS pack_name,
+                COALESCE(NULLIF(pack_type, ''), 'STANDARD') AS pack_type,
+                0,
+                units_per_pack, kg_per_unit, pack_tare_kg,
+                pack_length_m, pack_width_m, pack_height_m,
+                min_order_packs, increment_packs, stackable
+            FROM packaging_rules_old
+            """
+        )
+        conn.execute("DROP TABLE packaging_rules_old")
+
+        conn.execute(
+            """
+            UPDATE packaging_rules
+            SET is_default = 1
+            WHERE id IN (
+                SELECT MIN(id)
+                FROM packaging_rules
+                GROUP BY sku_id
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_packaging_rules_single_default ON packaging_rules(sku_id) WHERE is_default = 1"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_packaging_rules_sku_id ON packaging_rules(sku_id)")
+
+        demand_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='demand_lines'").fetchone()
+        if demand_exists:
+            dl_cols = {row[1] for row in conn.execute("PRAGMA table_info(demand_lines)").fetchall()}
+            if "pack_rule_id" not in dl_cols:
+                conn.execute("ALTER TABLE demand_lines ADD COLUMN pack_rule_id INTEGER")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON;")
+
+
+MIGRATIONS.append((8, _migration_8_supplier_specific_pack_rules))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -708,7 +787,7 @@ TABLE_KEY_COLS: dict[str, list[str]] = {
     "equipment_presets": ["name"],
     "suppliers": ["supplier_code"],
     "sku_master": ["part_number", "supplier_id"],
-    "packaging_rules": ["sku_id", "pack_type"],
+    "packaging_rules": ["sku_id", "pack_name"],
     "lead_times": ["country_of_origin", "mode"],
     "lead_time_overrides": ["sku_id", "mode"],
     "rates": ["mode", "pricing_model", "origin", "destination", "equipment_name", "effective_start", "effective_end"],
@@ -814,3 +893,72 @@ def purge_demand_before(cutoff_date: str) -> dict[str, int]:
 def vacuum_db() -> None:
     conn = get_conn()
     conn.execute("VACUUM")
+
+
+def select_default_pack_rule(conn: sqlite3.Connection, sku_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM packaging_rules
+        WHERE sku_id = ?
+        ORDER BY is_default DESC, id ASC
+        LIMIT 1
+        """,
+        (sku_id,),
+    ).fetchone()
+
+
+def resolve_pack_rule_for_demand(conn: sqlite3.Connection, demand_line: sqlite3.Row) -> sqlite3.Row | None:
+    if demand_line["pack_rule_id"] is not None:
+        row = conn.execute(
+            "SELECT * FROM packaging_rules WHERE id = ? AND sku_id = ?",
+            (demand_line["pack_rule_id"], demand_line["sku_id"]),
+        ).fetchone()
+        if row is not None:
+            return row
+    return select_default_pack_rule(conn, int(demand_line["sku_id"]))
+
+
+def map_import_demand_rows(
+    import_frame: pd.DataFrame,
+    sku_catalog: pd.DataFrame,
+    supplier_choice_by_part: dict[str, str] | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    supplier_choice_by_part = supplier_choice_by_part or {}
+    frame = import_frame.copy()
+    errors: list[str] = []
+
+    if "supplier_code" in frame.columns:
+        merged = frame.merge(
+            sku_catalog[["sku_id", "part_number", "supplier_code"]],
+            on=["part_number", "supplier_code"],
+            how="left",
+        )
+        missing = merged[merged["sku_id"].isna()]
+        if not missing.empty:
+            errors.append("Some rows did not map to sku_id from part_number + supplier_code")
+        return merged, errors
+
+    merged = frame.merge(
+        sku_catalog[["sku_id", "part_number", "supplier_code"]],
+        on=["part_number"],
+        how="left",
+    )
+    candidate_counts = merged.groupby("part_number")["sku_id"].nunique(dropna=True)
+    ambiguous_parts = candidate_counts[candidate_counts > 1].index.tolist()
+
+    for part_number in ambiguous_parts:
+        selected_supplier = supplier_choice_by_part.get(part_number)
+        if not selected_supplier:
+            errors.append(f"Supplier selection required for part_number={part_number}")
+            continue
+        mask = (merged["part_number"] == part_number) & (merged["supplier_code"] == selected_supplier)
+        sku_values = merged.loc[mask, "sku_id"].dropna().unique().tolist()
+        if not sku_values:
+            errors.append(f"Invalid supplier mapping for part_number={part_number}")
+            continue
+        merged.loc[merged["part_number"] == part_number, "sku_id"] = sku_values[0]
+
+    if merged["sku_id"].isna().any():
+        errors.append("Some rows are still unmapped to sku_id")
+
+    return merged, errors

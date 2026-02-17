@@ -231,7 +231,7 @@ def test_migration_v7_backfills_packaging_rules_sku_id_from_part_number(tmp_path
     assert "idx_packaging_rules_sku_id" in idx
 
 
-def test_packaging_rules_crud_with_composite_key(tmp_path):
+def test_packaging_rules_crud_with_pack_name_key(tmp_path):
     db.DB_PATH = tmp_path / "planner.db"
     run_migrations()
     conn = db.get_conn()
@@ -252,28 +252,124 @@ def test_packaging_rules_crud_with_composite_key(tmp_path):
         [
             {
                 "sku_id": sku_id,
+                "pack_name": "CASE",
                 "pack_type": "CASE",
                 "is_default": 1,
                 "units_per_pack": 10,
                 "kg_per_unit": 1.0,
                 "pack_tare_kg": 0.5,
-                "pack_length_m": 0.2,
-                "pack_width_m": 0.2,
-                "pack_height_m": 0.2,
+                "dim_l_m": 0.2,
+                "dim_w_m": 0.2,
+                "dim_h_m": 0.2,
                 "min_order_packs": 1,
                 "increment_packs": 1,
                 "stackable": 1,
             }
         ]
     )
-    upsert_rows(conn, "packaging_rules", seed, ["sku_id", "pack_type"])
+    upsert_rows(conn, "packaging_rules", seed, ["sku_id", "pack_name"])
 
     changed = seed.copy()
     changed.loc[0, "units_per_pack"] = 24
-    upsert_rows(conn, "packaging_rules", changed, ["sku_id", "pack_type"])
+    upsert_rows(conn, "packaging_rules", changed, ["sku_id", "pack_name"])
 
     updated_units = conn.execute(
-        "SELECT units_per_pack FROM packaging_rules WHERE sku_id=? AND pack_type='CASE'",
+        "SELECT units_per_pack FROM packaging_rules WHERE sku_id=? AND pack_name='CASE'",
         (sku_id,),
     ).fetchone()[0]
     assert updated_units == 24
+
+
+def test_single_default_pack_rule_per_sku_enforced(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    conn = db.get_conn()
+
+    with conn:
+        conn.execute("INSERT INTO suppliers(supplier_code, supplier_name) VALUES ('S3', 'Supplier 3')")
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='S3'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('PN-D', ?, 'D', 'US')",
+            (supplier_id,),
+        )
+        sku_id = conn.execute("SELECT sku_id FROM sku_master WHERE part_number='PN-D' AND supplier_id=?", (supplier_id,)).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO packaging_rules(sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, dim_l_m, dim_w_m, dim_h_m)
+            VALUES (?, 'CASE', 'CASE', 1, 10, 1, 0.1, 0.2, 0.2, 0.2)
+            """,
+            (sku_id,),
+        )
+
+    with conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO packaging_rules(sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, dim_l_m, dim_w_m, dim_h_m)
+                VALUES (?, 'PALLET', 'PALLET', 1, 100, 1, 1, 1, 1, 1)
+                """,
+                (sku_id,),
+            )
+            assert False, "Expected single-default unique index violation"
+        except sqlite3.IntegrityError:
+            pass
+
+
+def test_map_demand_rows_to_sku_id_with_supplier_code(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    catalog = pd.DataFrame(
+        [
+            {"sku_id": 1, "part_number": "PN1", "supplier_code": "S1"},
+            {"sku_id": 2, "part_number": "PN1", "supplier_code": "S2"},
+        ]
+    )
+    imported = pd.DataFrame([{"part_number": "PN1", "supplier_code": "S2", "qty": 10, "need_date": "2026-01-01"}])
+    merged, errors = db.map_import_demand_rows(imported, catalog)
+    assert not errors
+    assert int(merged.loc[0, "sku_id"]) == 2
+
+
+def test_pack_rounding_uses_default_or_override_pack_rule(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    conn = db.get_conn()
+
+    with conn:
+        conn.execute("INSERT INTO suppliers(supplier_code, supplier_name) VALUES ('S4', 'Supplier 4')")
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='S4'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('PN-R', ?, 'R', 'US')",
+            (supplier_id,),
+        )
+        sku_id = conn.execute("SELECT sku_id FROM sku_master WHERE part_number='PN-R' AND supplier_id=?", (supplier_id,)).fetchone()[0]
+
+        conn.execute(
+            """
+            INSERT INTO packaging_rules(sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, dim_l_m, dim_w_m, dim_h_m)
+            VALUES (?, 'SMALL', 'CASE', 1, 10, 1, 0, 0.1, 0.1, 0.1)
+            """,
+            (sku_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO packaging_rules(sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg, dim_l_m, dim_w_m, dim_h_m)
+            VALUES (?, 'LARGE', 'PALLET', 0, 25, 1, 0, 0.2, 0.2, 0.2)
+            """,
+            (sku_id,),
+        )
+        override_id = conn.execute("SELECT id FROM packaging_rules WHERE sku_id=? AND pack_name='LARGE'", (sku_id,)).fetchone()[0]
+        conn.execute("INSERT INTO demand_lines(sku_id, need_date, qty, pack_rule_id) VALUES (?, '2026-01-01', 51, NULL)", (sku_id,))
+        conn.execute("INSERT INTO demand_lines(sku_id, need_date, qty, pack_rule_id) VALUES (?, '2026-01-01', 51, ?)", (sku_id, override_id))
+
+    rows = conn.execute("SELECT * FROM demand_lines ORDER BY id").fetchall()
+    default_rule = db.resolve_pack_rule_for_demand(conn, rows[0])
+    override_rule = db.resolve_pack_rule_for_demand(conn, rows[1])
+
+    from models import PackagingRule, rounded_order_packs
+
+    default_packs = rounded_order_packs(51, PackagingRule(**{k: default_rule[k] for k in PackagingRule.__dataclass_fields__.keys() if k in default_rule.keys()}))
+    override_packs = rounded_order_packs(51, PackagingRule(**{k: override_rule[k] for k in PackagingRule.__dataclass_fields__.keys() if k in override_rule.keys()}))
+
+    assert default_packs == 6
+    assert override_packs == 3

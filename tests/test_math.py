@@ -13,9 +13,9 @@ def test_pack_rounding_with_moq_and_increment():
         units_per_pack=24,
         kg_per_unit=1,
         pack_tare_kg=0.5,
-        pack_length_m=0.5,
-        pack_width_m=0.4,
-        pack_height_m=0.3,
+        dim_l_m=0.5,
+        dim_w_m=0.4,
+        dim_h_m=0.3,
         min_order_packs=5,
         increment_packs=5,
     )
