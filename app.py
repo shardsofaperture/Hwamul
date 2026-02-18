@@ -135,6 +135,69 @@ def render_docs_page(doc_file: str) -> None:
     st.markdown(content)
 
 
+def render_template_downloads(prefix: str = "tpl") -> None:
+    templates_dir = Path("templates")
+    for _, fname in TEMPLATE_SPECS:
+        template_path = templates_dir / fname
+        if template_path.exists():
+            st.download_button(
+                f"Download {fname}",
+                data=template_path.read_bytes(),
+                file_name=fname,
+                mime="text/csv",
+                key=f"{prefix}_{fname}",
+            )
+    bom_template = templates_dir / "bom_template.csv"
+    if bom_template.exists():
+        st.download_button(
+            "Download bom_template.csv",
+            data=bom_template.read_bytes(),
+            file_name="bom_template.csv",
+            mime="text/csv",
+            key=f"{prefix}_bom_template",
+        )
+
+
+def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_supplier_map") -> tuple[bool, str]:
+    required_import_cols = [name for name, spec in TABLE_SPECS["demand_import"].items() if spec.required]
+    missing_required = [col for col in required_import_cols if col not in import_frame.columns]
+    if missing_required:
+        return False, "Demand import is missing required columns: " + ", ".join(missing_required)
+
+    import_errors = validate_with_specs("demand_import", import_frame) + validate_dates(import_frame, ["need_date"])
+    if import_errors:
+        return False, "; ".join(import_errors)
+
+    sku_catalog = read_sku_catalog()
+    supplier_choices = st.session_state.setdefault(supplier_key, {})
+    merged, map_errors = map_import_demand_rows(import_frame, sku_catalog, supplier_choices)
+    if "supplier_code" not in import_frame.columns:
+        ambiguous_parts = merged.groupby("part_number")["sku_id"].nunique(dropna=True)
+        for pn in ambiguous_parts[ambiguous_parts > 1].index.tolist():
+            sup_opts = sku_catalog[sku_catalog["part_number"] == pn]["supplier_code"].tolist()
+            if not sup_opts:
+                continue
+            current = supplier_choices.get(pn, sup_opts[0])
+            supplier_choices[pn] = st.selectbox(
+                f"Select supplier for {pn}",
+                sup_opts,
+                index=sup_opts.index(current) if current in sup_opts else 0,
+                key=f"{supplier_key}_{pn}",
+            )
+        merged, map_errors = map_import_demand_rows(import_frame, sku_catalog, supplier_choices)
+    if map_errors:
+        return False, "; ".join(map_errors)
+
+    cols = ["sku_id", "need_date", "qty", "coo_override", "priority", "notes", "phase", "mode_override", "service_scope", "miles"]
+    if "pack_rule_id" in merged.columns:
+        cols.append("pack_rule_id")
+    to_insert = merged[cols]
+    conn = get_conn()
+    with conn:
+        to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
+    return True, f"Imported {len(to_insert)} demand rows"
+
+
 st.title("Local Logistics Planning App")
 if hasattr(st.sidebar, "page_link"):
     st.sidebar.page_link("pages/quick_plan.py", label="Quick Plan", icon="📦")
@@ -160,6 +223,7 @@ if section == "Admin":
             "Phase defaults",
             "Lanes",
             "Demand entry",
+            "Templates & Upload Hub",
             "Data management",
         ],
     )
@@ -853,6 +917,125 @@ Example: CN + OCEAN = 35 days.""")
                 else:
                     st.error(f"Could not save demand lines: {err}")
 
+    elif admin_screen == "Templates & Upload Hub":
+        render_about(
+            "Templates & Upload Hub",
+            "Central place to download all templates and upload supported master-demand files.\n\n"
+            "Use this page when onboarding or doing a bulk refresh.",
+        )
+        st.subheader("Download all templates")
+        render_template_downloads(prefix="hub")
+
+        st.divider()
+        st.subheader("Demand upload")
+        st.caption("Upload demand_template.csv-compatible data. This appends rows to demand_lines.")
+        demand_upload = st.file_uploader("Upload demand csv", type=["csv"], key="hub_demand_upload")
+        if demand_upload is not None:
+            demand_df = pd.read_csv(demand_upload)
+            demand_edit = st.data_editor(demand_df, num_rows="dynamic", width="stretch", key="hub_demand_editor")
+            if st.button("Apply demand import", key="hub_apply_demand"):
+                ok, msg = apply_demand_import(demand_edit, supplier_key="hub_import_supplier_map")
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        st.divider()
+        st.subheader("Pack master upload")
+        st.caption("Upload pack_mdm_template.csv-compatible data to update default standard pack profile by SKU + supplier.")
+        pack_upload = st.file_uploader("Upload pack master data csv", type=["csv"], key="hub_pack_mdm_upload")
+        if pack_upload is not None:
+            imported_pack = pd.read_csv(pack_upload)
+            imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="hub_pack_mdm_editor")
+            if st.button("Apply pack master import", key="hub_apply_pack_mdm"):
+                required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
+                missing_pack_cols = [col for col in required_pack_cols if col not in imported_pack_edit.columns]
+                if missing_pack_cols:
+                    st.error("Pack master import is missing required column(s): " + ", ".join(missing_pack_cols))
+                    st.stop()
+
+                import_errors = validate_with_specs("pack_rules_import", imported_pack_edit)
+                if import_errors:
+                    st.error("; ".join(import_errors))
+                    st.stop()
+
+                sku_catalog = read_sku_catalog()
+                sku_lookup = sku_catalog[["sku_id", "part_number", "supplier_code"]].drop_duplicates()
+                merged_pack = imported_pack_edit.merge(sku_lookup, on=["part_number", "supplier_code"], how="left")
+                unresolved = merged_pack[merged_pack["sku_id"].isna()][["part_number", "supplier_code"]].drop_duplicates()
+                if not unresolved.empty:
+                    missing_keys = ", ".join([f"{r.part_number}/{r.supplier_code}" for r in unresolved.itertuples(index=False)])
+                    st.error(f"Could not map these part_number + supplier_code rows to an SKU: {missing_keys}")
+                    st.stop()
+
+                merged_pack = merged_pack.copy()
+                merged_pack["pack_name"] = merged_pack["pack_name"].astype(str) if "pack_name" in merged_pack.columns else ""
+                merged_pack["pack_name"] = merged_pack.apply(
+                    lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
+                    axis=1,
+                )
+                if "is_default" not in merged_pack.columns:
+                    merged_pack["is_default"] = 1
+                merged_pack["is_default"] = merged_pack["is_default"].fillna(1).astype(int)
+
+                upsert_df = pd.DataFrame(
+                    {
+                        "sku_id": merged_pack["sku_id"].astype(int),
+                        "pack_name": merged_pack["pack_name"],
+                        "pack_type": "STANDARD",
+                        "is_default": merged_pack["is_default"],
+                        "units_per_pack": 1.0,
+                        "kg_per_unit": pd.to_numeric(merged_pack["standard_pack_kg"], errors="coerce"),
+                        "pack_tare_kg": 0.0,
+                        "dim_l_m": merged_pack["dim_l_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_w_m": merged_pack["dim_w_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_h_m": merged_pack["dim_h_cm"].apply(normalize_pack_dimension_to_meters),
+                        "min_order_packs": 1,
+                        "increment_packs": 1,
+                        "stackable": merged_pack["stackable"].fillna(0).astype(int),
+                        "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
+                    }
+                )
+
+                conn = get_conn()
+                applied = 0
+                with conn:
+                    for row in upsert_df.itertuples(index=False):
+                        existing = conn.execute(
+                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY is_default DESC, id ASC LIMIT 1",
+                            (int(row.sku_id),),
+                        ).fetchone()
+                        if existing:
+                            conn.execute(
+                                """
+                                UPDATE packaging_rules
+                                SET pack_name=?, pack_type=?, is_default=?, units_per_pack=?, kg_per_unit=?, pack_tare_kg=?,
+                                    dim_l_m=?, dim_w_m=?, dim_h_m=?, min_order_packs=?, increment_packs=?, stackable=?, max_stack=?
+                                WHERE id=?
+                                """,
+                                (
+                                    row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
+                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
+                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None, int(existing["id"]),
+                                ),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO packaging_rules(
+                                    sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                                    dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    int(row.sku_id), row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
+                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
+                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None,
+                                ),
+                            )
+                        applied += 1
+                st.success(f"Applied pack master rows: {applied}")
+
     elif admin_screen == "Data management":
         render_about("Data management", "Export/import JSON bundles, purge old demand, and compact DB.\n\nPrerequisites: none.\n\nSteps: download/upload bundle as needed, then run cleanup actions carefully.\n\nExample: export full bundle before large edits.")
         st.subheader("Bulk export / import")
@@ -1212,11 +1395,7 @@ elif section == "Docs":
     elif doc_page == "Import Templates":
         render_docs_page("import_templates.md")
         st.subheader("Download CSV templates")
-        templates_dir = Path("templates")
-        for _, fname in TEMPLATE_SPECS:
-            template_path = templates_dir / fname
-            csv_blob = template_path.read_bytes()
-            st.download_button(f"Download {fname}", data=csv_blob, file_name=fname, mime="text/csv")
+        render_template_downloads(prefix="docs")
     else:
         render_docs_page("faq.md")
 

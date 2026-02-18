@@ -15,15 +15,65 @@ from bom_planner import (
     read_bom_upload,
     validate_bom_frame,
 )
-from db import get_conn, run_migrations
+from db import get_conn, map_import_demand_rows, run_migrations
 from seed import seed_if_empty
+from field_specs import TABLE_SPECS
+from validators import validate_dates, validate_with_specs
+from pathlib import Path
 
 st.set_page_config(page_title="BOM Planner", layout="wide")
 run_migrations()
 seed_if_empty()
 conn = get_conn()
 
+
+
+def render_demand_upload_box(conn) -> None:
+    with st.expander("Upload data to fill this page", expanded=False):
+        st.caption("Optional demand upload to populate planning data while using BOM workflows.")
+        demand_template = Path("templates") / "demand_template.csv"
+        if demand_template.exists():
+            st.download_button("Download demand_template.csv", data=demand_template.read_bytes(), file_name="demand_template.csv", mime="text/csv", key="bom_demand_template")
+        upload = st.file_uploader("Upload demand csv", type=["csv"], key="bom_demand_upload")
+        if upload is None:
+            return
+        frame = pd.read_csv(upload)
+        edited = st.data_editor(frame, num_rows="dynamic", width="stretch", key="bom_demand_editor")
+        if st.button("Append uploaded demand", key="bom_append_demand"):
+            required = [name for name, spec in TABLE_SPECS["demand_import"].items() if spec.required]
+            missing = [col for col in required if col not in edited.columns]
+            if missing:
+                st.error("Missing required columns: " + ", ".join(missing))
+                st.stop()
+            errors = validate_with_specs("demand_import", edited) + validate_dates(edited, ["need_date"])
+            if errors:
+                st.error("; ".join(errors))
+                st.stop()
+            sku_catalog = pd.read_sql_query(
+                """SELECT sm.sku_id, sm.part_number, s.supplier_code FROM sku_master sm JOIN suppliers s ON s.supplier_id = sm.supplier_id""",
+                conn,
+            )
+            merged, map_errors = map_import_demand_rows(edited, sku_catalog, {})
+            if map_errors:
+                st.error("; ".join(map_errors))
+                st.stop()
+            to_insert = merged[["sku_id", "need_date", "qty", "coo_override", "priority", "notes", "phase", "mode_override", "service_scope", "miles"]]
+            with conn:
+                to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
+            st.success(f"Appended {len(to_insert)} demand rows")
+
 st.title("BOM Planner")
+
+if hasattr(st, "page_link"):
+    nav = st.container(border=True)
+    nav.caption("Navigation")
+    c1, c2, c3, c4 = nav.columns(4)
+    c1.page_link("app.py", label="Main Planner", icon="🏠")
+    c2.page_link("pages/quick_plan.py", label="Quick Plan", icon="📦")
+    c3.page_link("pages/batch_plan.py", label="Batch Plan", icon="🚚")
+    c4.page_link("pages/bom_planner.py", label="BOM Planner", icon="🧾")
+
+render_demand_upload_box(conn)
 
 runs = pd.read_sql_query("SELECT bom_run_id, name, created_at FROM bom_runs ORDER BY bom_run_id DESC", conn)
 selected_run = st.selectbox("BOM Run", runs["bom_run_id"].tolist() if not runs.empty else [], format_func=lambda x: f"Run {x}") if not runs.empty else None
