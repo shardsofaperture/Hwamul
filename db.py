@@ -1437,6 +1437,99 @@ def delete_rows(conn: sqlite3.Connection, table: str, rows: pd.DataFrame, key_co
     conn.executemany(sql, params)
 
 
+def normalize_delimited_tokens(raw_value: object, delimiter: str = "|") -> list[str]:
+    """Normalize a delimited string into deduplicated uppercase tokens."""
+    if raw_value is None or pd.isna(raw_value):
+        return []
+    tokens = [str(v).strip().upper() for v in str(raw_value).split(delimiter)]
+    return sorted({tok for tok in tokens if tok})
+
+
+def replace_sku_token_set(
+    conn: sqlite3.Connection,
+    *,
+    table_name: str,
+    sku_id: int,
+    column_name: str,
+    values: list[str],
+) -> int:
+    """Replace all set rows for a SKU and return inserted row count."""
+    with conn:
+        conn.execute(f"DELETE FROM {table_name} WHERE sku_id = ?", (sku_id,))
+        if not values:
+            return 0
+        conn.executemany(
+            f"INSERT INTO {table_name}(sku_id, {column_name}) VALUES (?, ?)",
+            [(sku_id, v) for v in values],
+        )
+    return len(values)
+
+
+def get_sku_routing_context(conn: sqlite3.Connection, sku_id: int) -> dict[str, object]:
+    """Return route/commercial fields used for planner read paths."""
+    context: dict[str, object] = {
+        "ship_from_origin_code": None,
+        "ship_from": {},
+        "ship_to_locations": [],
+        "allowed_modes": [],
+        "incoterm": None,
+        "incoterm_named_place": None,
+    }
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                sm.incoterm,
+                sm.incoterm_named_place,
+                sfl.city AS ship_from_city,
+                sfl.port_code AS ship_from_port_code,
+                sfl.internal_location_code AS ship_from_location_code,
+                sfl.supplier_duns AS ship_from_duns
+            FROM sku_master sm
+            LEFT JOIN ship_from_locations sfl ON sfl.ship_from_location_id = sm.ship_from_location_id
+            WHERE sm.sku_id = ?
+            """,
+            (sku_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+
+    if row:
+        ship_from = {
+            "city": row["ship_from_city"],
+            "port_code": row["ship_from_port_code"],
+            "location_code": row["ship_from_location_code"],
+            "supplier_duns": row["ship_from_duns"],
+        }
+        context["ship_from"] = ship_from
+        context["ship_from_origin_code"] = next(
+            (v for v in [ship_from["port_code"], ship_from["location_code"], ship_from["city"]] if v),
+            None,
+        )
+        context["incoterm"] = row["incoterm"]
+        context["incoterm_named_place"] = row["incoterm_named_place"]
+
+    try:
+        ship_to_rows = conn.execute(
+            "SELECT destination_code FROM sku_ship_to_locations WHERE sku_id = ? ORDER BY destination_code",
+            (sku_id,),
+        ).fetchall()
+        context["ship_to_locations"] = [r["destination_code"] for r in ship_to_rows]
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        mode_rows = conn.execute(
+            "SELECT mode_code FROM sku_allowed_modes WHERE sku_id = ? ORDER BY mode_code",
+            (sku_id,),
+        ).fetchall()
+        context["allowed_modes"] = [str(r["mode_code"]).strip().upper() for r in mode_rows if str(r["mode_code"]).strip()]
+    except sqlite3.OperationalError:
+        pass
+
+    return context
+
+
 EXPORT_TABLE_ORDER = [
     "equipment_presets",
     "sku_equipment_rules",

@@ -43,3 +43,27 @@ def test_pack_mdm_canonical_columns_present():
     }
     assert required.issubset(set(cols.keys()))
     assert "is_default" not in cols
+
+
+def test_pack_mdm_template_header_matches_v2_spec(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ensure_templates()
+
+    template_path = tmp_path / "templates" / "pack_mdm_template.csv"
+    with template_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        header = next(reader)
+
+    expected = list(TABLE_SPECS["pack_rules_import"].keys())
+    assert header == expected
+    for col in [
+        "ship_from_city",
+        "ship_from_port_code",
+        "ship_from_duns",
+        "ship_from_location_code",
+        "ship_to_locations",
+        "allowed_modes",
+        "incoterm",
+        "incoterm_named_place",
+    ]:
+        assert col in header

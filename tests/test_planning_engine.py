@@ -111,6 +111,25 @@ def _setup_min_db() -> sqlite3.Connection:
             applies_when TEXT
         );
         CREATE TABLE carrier (id INTEGER PRIMARY KEY, code TEXT, name TEXT);
+
+        CREATE TABLE ship_from_locations (
+            ship_from_location_id INTEGER PRIMARY KEY,
+            canonical_location_key TEXT,
+            city TEXT,
+            port_code TEXT,
+            supplier_duns TEXT,
+            internal_location_code TEXT
+        );
+        CREATE TABLE sku_ship_to_locations (
+            sku_id INTEGER,
+            destination_code TEXT,
+            PRIMARY KEY(sku_id, destination_code)
+        );
+        CREATE TABLE sku_allowed_modes (
+            sku_id INTEGER,
+            mode_code TEXT,
+            PRIMARY KEY(sku_id, mode_code)
+        );
         """
     )
     conn.execute("INSERT INTO sku_master VALUES (1, 'P1', 'Part 1', 'CN')")
@@ -201,3 +220,35 @@ def test_missing_equipment_payload_is_reported_as_excluded_reason():
     )
     assert result["equipment"] == []
     assert "max_payload_kg" in result["excluded_equipment"][0]["reason"]
+
+
+def test_routing_context_auto_selects_ship_from_dest_and_mode_filters():
+    conn = _setup_min_db()
+    conn.execute("ALTER TABLE sku_master ADD COLUMN ship_from_location_id INTEGER")
+    conn.execute("ALTER TABLE sku_master ADD COLUMN incoterm TEXT")
+    conn.execute("ALTER TABLE sku_master ADD COLUMN incoterm_named_place TEXT")
+    conn.execute("UPDATE sku_master SET ship_from_location_id = 1, incoterm = 'FOB', incoterm_named_place = 'SHANGHAI PORT' WHERE sku_id = 1")
+    conn.execute("INSERT INTO ship_from_locations VALUES (1, 'K1', 'SHANGHAI', 'CNSHA', '123', 'CN_SHA_PDC')")
+    conn.execute("INSERT INTO sku_ship_to_locations VALUES (1, 'USLAX_DC01')")
+    conn.execute("INSERT INTO sku_allowed_modes VALUES (1, 'OCEAN')")
+    conn.execute("INSERT INTO equipment_presets VALUES (2, 'CNT_40_DRY_STD', 'DRY_STD', 'OCEAN', 12, 2.3, 2.3, 26000, 1, NULL, 0, 0)")
+    conn.commit()
+
+    result = plan_quick_run(
+        conn=conn,
+        sku_id=1,
+        required_units=10,
+        need_date="2026-01-10",
+        coo_override=None,
+        pack_rule_id=None,
+        lane_origin_code=None,
+        lane_dest_code=None,
+        service_scope="P2P",
+        modes=None,
+    )
+    assert {row["mode"] for row in result["equipment"]} == {"OCEAN"}
+    assert any(row["mode"] == "AIR" and "allowed_modes" in row["reason"] for row in result["excluded_equipment"])
+    routing = result["routing_context"]
+    assert routing["selected_origin_code"] == "CNSHA"
+    assert routing["selected_dest_code"] == "USLAX_DC01"
+    assert routing["incoterm"] == "FOB"

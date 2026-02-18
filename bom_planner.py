@@ -76,7 +76,30 @@ def validate_bom_frame(conn: sqlite3.Connection, frame: pd.DataFrame) -> tuple[p
         errors.append(f"Row {idx + 1}: invalid need_date")
     df["need_date"] = parsed.dt.date.astype("string")
 
-    sku_map = pd.read_sql_query("SELECT sku_id, part_number, default_coo FROM sku_master", conn)
+    sku_map = pd.read_sql_query(
+        """
+        SELECT
+            sm.sku_id,
+            sm.part_number,
+            sm.default_coo,
+            sm.incoterm,
+            sm.incoterm_named_place,
+            COALESCE(sfl.port_code, sfl.internal_location_code, sfl.city) AS ship_from_origin_code,
+            (
+                SELECT GROUP_CONCAT(destination_code, '|')
+                FROM sku_ship_to_locations st
+                WHERE st.sku_id = sm.sku_id
+            ) AS ship_to_locations,
+            (
+                SELECT GROUP_CONCAT(mode_code, '|')
+                FROM sku_allowed_modes sam
+                WHERE sam.sku_id = sm.sku_id
+            ) AS allowed_modes
+        FROM sku_master sm
+        LEFT JOIN ship_from_locations sfl ON sfl.ship_from_location_id = sm.ship_from_location_id
+        """,
+        conn,
+    )
     merged = df.merge(sku_map, on="part_number", how="left")
     missing_sku = merged[merged["sku_id"].isna()]
     for idx, row in missing_sku.iterrows():
