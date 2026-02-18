@@ -26,15 +26,16 @@ def test_ibc_non_stackable_40rf_floor_grid_limits_to_18():
     assert result["limiting_constraint"] == "FLOOR_GRID"
 
 
-def test_dray_legal_payload_can_be_limiting_constraint():
+def test_dray_legal_payload_is_limiting_constraint():
     pack_rule = {
         "units_per_pack": 1,
-        "kg_per_unit": 5000,
+        "kg_per_unit": 1000,
         "pack_tare_kg": 0,
-        "dim_l_m": 1,
-        "dim_w_m": 1,
-        "dim_h_m": 1,
+        "dim_l_m": 1.0,
+        "dim_w_m": 1.0,
+        "dim_h_m": 1.0,
         "stackable": 1,
+        "max_stack": 3,
     }
     equipment = {
         "mode": "DRAY",
@@ -50,9 +51,9 @@ def test_dray_legal_payload_can_be_limiting_constraint():
             "drive_axles": 2,
             "trailer_axles": 2,
             "axle_span_ft": 51,
-            "tractor_tare_lb": 22000,
-            "trailer_tare_lb": 12000,
-            "container_tare_lb": 9000,
+            "tractor_tare_lb": 26000,
+            "trailer_tare_lb": 14000,
+            "container_tare_lb": 12000,
             "max_gvw_lb": 80000,
             "steer_weight_share_pct": 0.12,
             "drive_weight_share_pct": 0.44,
@@ -65,5 +66,30 @@ def test_dray_legal_payload_can_be_limiting_constraint():
         },
     }
     result = max_units_per_conveyance(1, pack_rule, equipment, context=context)
-    assert result["limiting_constraint"] in {"DRAY_LEGAL_PAYLOAD", "AXLE_GROUP_LIMIT", "GVW_LIMIT", "BRIDGE_FORMULA"}
-    assert result["max_units"] >= 0
+    assert result["limiting_constraint"] == "DRAY_LEGAL_PAYLOAD"
+    assert result["max_units"] == 11
+
+
+def test_ocean_only_floor_grid_is_limiting_constraint():
+    pack_rule = {
+        "units_per_pack": 1,
+        "kg_per_unit": 300,
+        "pack_tare_kg": 0,
+        "dim_l_m": 2.2,
+        "dim_w_m": 1.1,
+        "dim_h_m": 1.0,
+        "stackable": 0,
+        "max_stack": None,
+    }
+    equipment = {
+        "mode": "OCEAN",
+        "internal_length_m": 12.03,
+        "internal_width_m": 2.35,
+        "internal_height_m": 2.39,
+        "max_payload_kg": 26000,
+    }
+    result = max_units_per_conveyance(1, pack_rule, equipment, context={})
+    assert result["packs_per_layer"] == 10
+    assert result["layers_allowed"] == 1
+    assert result["max_units"] == 10
+    assert result["limiting_constraint"] == "FLOOR_GRID"

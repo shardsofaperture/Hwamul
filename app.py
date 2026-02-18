@@ -9,6 +9,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from constraints_engine import max_units_per_conveyance
+from fit_engine import equipment_count_for_packs
+
 from db import (
     compute_grid_diff,
     delete_rows,
@@ -981,10 +984,25 @@ elif section == "Planner":
                     total_volume_m3 = packs_needed * pack_cube
 
                     for _, eq_row in eq.iterrows():
-                        eq_obj = equipment_from_row(eq_row.to_dict())
-                        by_cube = ceil(total_volume_m3 / eq_obj.volume_m3) if eq_obj.volume_m3 > 0 else 0
-                        by_payload = ceil(total_weight_kg / eq_obj.max_payload_kg) if eq_obj.max_payload_kg > 0 else 0
-                        equipment_needed = max(1, by_cube, by_payload) if (by_cube or by_payload) else 0
+                        eq_dict = eq_row.to_dict()
+                        eq_obj = equipment_from_row(eq_dict)
+                        fit = max_units_per_conveyance(
+                            sku_id=int(row["sku_id"]),
+                            pack_rule={
+                                "units_per_pack": units_per_pack,
+                                "kg_per_unit": float(row.get("kg_per_unit") or 0),
+                                "pack_tare_kg": float(row.get("pack_tare_kg") or 0),
+                                "dim_l_m": float(row.get("dim_l_m") or 0),
+                                "dim_w_m": float(row.get("dim_w_m") or 0),
+                                "dim_h_m": float(row.get("dim_h_m") or 0),
+                                "stackable": int(eq_row.get("stackable", 1) if "stackable" in eq_row else 1),
+                                "max_stack": None,
+                            },
+                            equipment=eq_dict,
+                            context={"container_on_chassis": norm_mode(eq_obj.mode) in {"TRUCK", "DRAY"}},
+                        )
+                        packs_fit = int(fit["max_units"])
+                        equipment_needed = equipment_count_for_packs(packs_needed, packs_fit)
                         if equipment_needed == 0:
                             continue
                         results.append({
@@ -998,6 +1016,8 @@ elif section == "Planner":
                             "mode": eq_obj.mode,
                             "equipment": eq_obj.name,
                             "equipment_needed": equipment_needed,
+                            "limiting_constraint": fit.get("limiting_constraint"),
+                            "fit_diagnostics": "constraints_engine:max_units_per_conveyance@1.0.0",
                         })
 
                 if results:

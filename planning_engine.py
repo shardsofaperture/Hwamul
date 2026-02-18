@@ -299,6 +299,7 @@ def plan_quick_run(
                 "packs_fit": packs_fit,
                 "limiting_constraint": fit.get("limiting_constraint"),
                 "constraint_breakdown": fit.get("breakdown", []),
+                "fit_diagnostics": {"engine": "constraints_engine", "api": "max_units_per_conveyance", "version": "1.0.0"},
                 "equipment_count": equipment_count,
                 "cube_util": util["cube_util"],
                 "weight_util": util["weight_util"],
