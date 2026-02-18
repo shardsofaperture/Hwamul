@@ -1252,6 +1252,94 @@ def _migration_17_bom_batch_planning(conn: sqlite3.Connection) -> None:
 MIGRATIONS.append((17, _migration_17_bom_batch_planning))
 
 
+def _migration_18_sku_routing_and_location_dimensions(conn: sqlite3.Connection) -> None:
+    """Add ship-from/ship-to/mode dimensions and SKU route-level incoterm fields."""
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ship_from_locations (
+            ship_from_location_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            canonical_location_key TEXT NOT NULL,
+            city TEXT,
+            port_code TEXT,
+            supplier_duns TEXT,
+            internal_location_code TEXT,
+            notes TEXT,
+            UNIQUE(canonical_location_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ship_from_locations_city
+            ON ship_from_locations(city);
+        CREATE INDEX IF NOT EXISTS idx_ship_from_locations_port_code
+            ON ship_from_locations(port_code);
+        CREATE INDEX IF NOT EXISTS idx_ship_from_locations_supplier_duns
+            ON ship_from_locations(supplier_duns);
+        CREATE INDEX IF NOT EXISTS idx_ship_from_locations_internal_code
+            ON ship_from_locations(internal_location_code);
+
+        CREATE TABLE IF NOT EXISTS sku_ship_to_locations (
+            sku_id INTEGER NOT NULL,
+            destination_code TEXT NOT NULL,
+            notes TEXT,
+            PRIMARY KEY (sku_id, destination_code),
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sku_ship_to_destination_code
+            ON sku_ship_to_locations(destination_code);
+
+        CREATE TABLE IF NOT EXISTS sku_allowed_modes (
+            sku_id INTEGER NOT NULL,
+            mode_code TEXT NOT NULL,
+            notes TEXT,
+            PRIMARY KEY (sku_id, mode_code),
+            FOREIGN KEY (sku_id) REFERENCES sku_master(sku_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sku_allowed_modes_mode_code
+            ON sku_allowed_modes(mode_code);
+        """
+    )
+
+    sku_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sku_master'"
+    ).fetchone()
+    if sku_exists:
+        sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(sku_master)").fetchall()}
+        if "ship_from_location_id" not in sku_cols:
+            conn.execute(
+                "ALTER TABLE sku_master ADD COLUMN ship_from_location_id INTEGER REFERENCES ship_from_locations(ship_from_location_id)"
+            )
+        if "incoterm" not in sku_cols:
+            conn.execute("ALTER TABLE sku_master ADD COLUMN incoterm TEXT")
+        if "incoterm_named_place" not in sku_cols:
+            conn.execute("ALTER TABLE sku_master ADD COLUMN incoterm_named_place TEXT")
+
+        duplicate_keys = conn.execute(
+            """
+            SELECT part_number, supplier_id, COUNT(*) AS cnt
+            FROM sku_master
+            GROUP BY part_number, supplier_id
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        ).fetchone()
+        if duplicate_keys:
+            raise sqlite3.IntegrityError(
+                "Duplicate supplier+part identities exist in sku_master; cannot enforce uniqueness"
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_sku_master_part_supplier ON sku_master(part_number, supplier_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sku_master_ship_from_location_id ON sku_master(ship_from_location_id)"
+        )
+
+
+MIGRATIONS.append((18, _migration_18_sku_routing_and_location_dimensions))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
