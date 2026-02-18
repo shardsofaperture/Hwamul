@@ -67,3 +67,21 @@ def test_pack_mdm_template_header_matches_v2_spec(tmp_path, monkeypatch):
         "incoterm_named_place",
     ]:
         assert col in header
+
+
+def test_streamlined_template_catalog():
+    names = {filename for _, filename in TEMPLATE_SPECS}
+    assert "pack_mdm_template.csv" in names
+    assert "raw_bom_template.csv" in names
+    assert "carrier_template.csv" in names
+    assert "rate_cards_template.csv" in names
+    assert "rate_charges_template.csv" in names
+    assert "lanes_template.csv" in names
+    assert "suppliers_template.csv" not in names
+    assert "skus_template.csv" not in names
+    assert "pack_rules_template.csv" not in names
+
+
+def test_raw_bom_template_columns_present():
+    cols = TABLE_SPECS["raw_bom_import"]
+    assert {"part_number", "raw_qty"}.issubset(set(cols.keys()))
