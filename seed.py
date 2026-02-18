@@ -14,7 +14,7 @@ TEMPLATE_SPECS: list[tuple[str, str]] = [
     ("skus", "skus_template.csv"),
     ("pack_rules", "pack_rules_template.csv"),
     ("lead_times", "lead_times_template.csv"),
-    ("demand", "demand_template.csv"),
+    ("demand_import", "demand_template.csv"),
     ("rate_cards", "rate_cards_template.csv"),
     ("rate_charges", "rate_charges_template.csv"),
     ("customs_hts", "customs_hts_template.csv"),
