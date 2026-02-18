@@ -17,3 +17,29 @@ def test_generated_template_headers_match_table_specs(tmp_path, monkeypatch):
             header = next(reader)
 
         assert header == list(TABLE_SPECS[table_key].keys())
+
+
+
+
+def test_pack_mdm_canonical_columns_present():
+    cols = TABLE_SPECS["pack_rules_import"]
+    required = {
+        "part_number",
+        "supplier_code",
+        "pack_kg",
+        "length_mm",
+        "width_mm",
+        "height_mm",
+        "is_stackable",
+        "max_stack",
+        "ship_from_city",
+        "ship_from_port_code",
+        "ship_from_duns",
+        "ship_from_location_code",
+        "ship_to_locations",
+        "allowed_modes",
+        "incoterm",
+        "incoterm_named_place",
+    }
+    assert required.issubset(set(cols.keys()))
+    assert "is_default" not in cols
