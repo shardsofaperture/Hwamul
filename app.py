@@ -501,7 +501,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         st.markdown("#### Bulk import standard-pack master data (SKU + vendor)")
         st.caption(
             "Use this file to manage pack master data in one place and map each row to a supplier-specific SKU via part_number + supplier_code. "
-            "For standard-pack modeling, this import fixes units_per_pack=1 and stores your pack weight in standard_pack_kg."
+            "For standard-pack modeling, this import fixes units_per_pack=1 and stores your pack weight in pack_kg while converting dimensions from millimeters to meters."
         )
         pack_mdm_template = Path("templates") / "pack_mdm_template.csv"
         if pack_mdm_template.exists():
@@ -515,7 +515,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             "Upload pack master data csv",
             type=["csv"],
             key="pack_mdm_upload",
-            help="Columns: part_number, supplier_code, standard_pack_kg, dim_l_cm, dim_w_cm, dim_h_cm, stackable, optional max_stack/pack_name/is_default.",
+            help="Columns: part_number, supplier_code, pack_kg, length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, plus optional pack metadata.",
         )
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -552,34 +552,62 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
                     lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
                     axis=1,
                 )
-                if "is_default" not in merged_pack.columns:
-                    merged_pack["is_default"] = 1
-                merged_pack["is_default"] = merged_pack["is_default"].fillna(1).astype(int)
-
                 upsert_df = pd.DataFrame(
                     {
                         "sku_id": merged_pack["sku_id"].astype(int),
                         "pack_name": merged_pack["pack_name"],
                         "pack_type": "STANDARD",
-                        "is_default": merged_pack["is_default"],
+                        "is_default": 1,
                         "units_per_pack": 1.0,
-                        "kg_per_unit": pd.to_numeric(merged_pack["standard_pack_kg"], errors="coerce"),
+                        "kg_per_unit": pd.to_numeric(merged_pack["pack_kg"], errors="coerce"),
                         "pack_tare_kg": 0.0,
-                        "dim_l_m": merged_pack["dim_l_cm"].apply(normalize_pack_dimension_to_meters),
-                        "dim_w_m": merged_pack["dim_w_cm"].apply(normalize_pack_dimension_to_meters),
-                        "dim_h_m": merged_pack["dim_h_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_l_m": pd.to_numeric(merged_pack["length_mm"], errors="coerce") / 1000.0,
+                        "dim_w_m": pd.to_numeric(merged_pack["width_mm"], errors="coerce") / 1000.0,
+                        "dim_h_m": pd.to_numeric(merged_pack["height_mm"], errors="coerce") / 1000.0,
                         "min_order_packs": 1,
                         "increment_packs": 1,
-                        "stackable": merged_pack["stackable"].fillna(0).astype(int),
+                        "stackable": merged_pack["is_stackable"].fillna(0).astype(int),
                         "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
                     }
                 )
 
+                applied = 0
                 with conn:
-                    for sku_id in upsert_df.loc[upsert_df["is_default"] == 1, "sku_id"].drop_duplicates().tolist():
-                        conn.execute("UPDATE packaging_rules SET is_default = 0 WHERE sku_id = ?", (int(sku_id),))
-                    upsert_rows(conn, "packaging_rules", upsert_df, ["sku_id", "pack_name"])
-                st.success(f"Imported {len(upsert_df)} standard pack profile row(s)")
+                    for row in upsert_df.itertuples(index=False):
+                        existing = conn.execute(
+                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY id ASC LIMIT 1",
+                            (int(row.sku_id),),
+                        ).fetchone()
+                        if existing:
+                            conn.execute(
+                                """
+                                UPDATE packaging_rules
+                                SET pack_name=?, pack_type=?, is_default=?, units_per_pack=?, kg_per_unit=?, pack_tare_kg=?,
+                                    dim_l_m=?, dim_w_m=?, dim_h_m=?, min_order_packs=?, increment_packs=?, stackable=?, max_stack=?
+                                WHERE id=?
+                                """,
+                                (
+                                    row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
+                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
+                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None, int(existing["id"]),
+                                ),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO packaging_rules(
+                                    sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                                    dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    int(row.sku_id), row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
+                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
+                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None,
+                                ),
+                            )
+                        applied += 1
+                st.success(f"Imported {applied} standard pack profile row(s)")
                 st.rerun()
 
         with st.expander("Advanced pack rule editor (optional)", expanded=False):
@@ -942,7 +970,7 @@ Example: CN + OCEAN = 35 days.""")
 
         st.divider()
         st.subheader("Pack master upload")
-        st.caption("Upload pack_mdm_template.csv-compatible data to update default standard pack profile by SKU + supplier.")
+        st.caption("Upload pack_mdm_template.csv-compatible data to update the canonical standard pack profile by SKU + supplier (single-pack-per-part, no default flag).")
         pack_upload = st.file_uploader("Upload pack master data csv", type=["csv"], key="hub_pack_mdm_upload")
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -974,25 +1002,21 @@ Example: CN + OCEAN = 35 days.""")
                     lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
                     axis=1,
                 )
-                if "is_default" not in merged_pack.columns:
-                    merged_pack["is_default"] = 1
-                merged_pack["is_default"] = merged_pack["is_default"].fillna(1).astype(int)
-
                 upsert_df = pd.DataFrame(
                     {
                         "sku_id": merged_pack["sku_id"].astype(int),
                         "pack_name": merged_pack["pack_name"],
                         "pack_type": "STANDARD",
-                        "is_default": merged_pack["is_default"],
+                        "is_default": 1,
                         "units_per_pack": 1.0,
-                        "kg_per_unit": pd.to_numeric(merged_pack["standard_pack_kg"], errors="coerce"),
+                        "kg_per_unit": pd.to_numeric(merged_pack["pack_kg"], errors="coerce"),
                         "pack_tare_kg": 0.0,
-                        "dim_l_m": merged_pack["dim_l_cm"].apply(normalize_pack_dimension_to_meters),
-                        "dim_w_m": merged_pack["dim_w_cm"].apply(normalize_pack_dimension_to_meters),
-                        "dim_h_m": merged_pack["dim_h_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_l_m": pd.to_numeric(merged_pack["length_mm"], errors="coerce") / 1000.0,
+                        "dim_w_m": pd.to_numeric(merged_pack["width_mm"], errors="coerce") / 1000.0,
+                        "dim_h_m": pd.to_numeric(merged_pack["height_mm"], errors="coerce") / 1000.0,
                         "min_order_packs": 1,
                         "increment_packs": 1,
-                        "stackable": merged_pack["stackable"].fillna(0).astype(int),
+                        "stackable": merged_pack["is_stackable"].fillna(0).astype(int),
                         "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
                     }
                 )
@@ -1002,7 +1026,7 @@ Example: CN + OCEAN = 35 days.""")
                 with conn:
                     for row in upsert_df.itertuples(index=False):
                         existing = conn.execute(
-                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY is_default DESC, id ASC LIMIT 1",
+                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY id ASC LIMIT 1",
                             (int(row.sku_id),),
                         ).fetchone()
                         if existing:
