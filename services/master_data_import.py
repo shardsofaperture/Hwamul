@@ -129,9 +129,28 @@ def _normalize_import(import_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     data["pack_kg"] = pd.to_numeric(data["pack_kg"], errors="coerce")
-    data["length_mm"] = pd.to_numeric(data["length_mm"], errors="coerce")
-    data["width_mm"] = pd.to_numeric(data["width_mm"], errors="coerce")
-    data["height_mm"] = pd.to_numeric(data["height_mm"], errors="coerce")
+
+    # Prefer centimeter columns; accept legacy mm columns for backward compatibility.
+    if "length_cm" in data.columns:
+        data["length_cm"] = pd.to_numeric(data["length_cm"], errors="coerce")
+    elif "length_mm" in data.columns:
+        data["length_cm"] = pd.to_numeric(data["length_mm"], errors="coerce") / 10.0
+    else:
+        data["length_cm"] = pd.NA
+
+    if "width_cm" in data.columns:
+        data["width_cm"] = pd.to_numeric(data["width_cm"], errors="coerce")
+    elif "width_mm" in data.columns:
+        data["width_cm"] = pd.to_numeric(data["width_mm"], errors="coerce") / 10.0
+    else:
+        data["width_cm"] = pd.NA
+
+    if "height_cm" in data.columns:
+        data["height_cm"] = pd.to_numeric(data["height_cm"], errors="coerce")
+    elif "height_mm" in data.columns:
+        data["height_cm"] = pd.to_numeric(data["height_mm"], errors="coerce") / 10.0
+    else:
+        data["height_cm"] = pd.NA
     data["is_stackable"] = data["is_stackable"].apply(_to_bool_int)
     if "max_stack" in data.columns:
         data["max_stack"] = pd.to_numeric(data["max_stack"], errors="coerce")
@@ -158,12 +177,12 @@ def _validate_normalized_rows(data: pd.DataFrame) -> None:
         raise ValueError(f"pack_kg must be a positive number for all rows (bad row indexes: {row_nums})")
 
     bad_dims = data[
-        data["length_mm"].isna() | data["width_mm"].isna() | data["height_mm"].isna()
-        | (data["length_mm"] <= 0) | (data["width_mm"] <= 0) | (data["height_mm"] <= 0)
+        data["length_cm"].isna() | data["width_cm"].isna() | data["height_cm"].isna()
+        | (data["length_cm"] <= 0) | (data["width_cm"] <= 0) | (data["height_cm"] <= 0)
     ]
     if not bad_dims.empty:
         row_nums = ", ".join(map(str, bad_dims.index.tolist()))
-        raise ValueError(f"length_mm/width_mm/height_mm must be positive numbers for all rows (bad row indexes: {row_nums})")
+        raise ValueError(f"length_cm/width_cm/height_cm must be positive numbers for all rows (bad row indexes: {row_nums})")
 
     empty_sets = data[(data["ship_to_values"].str.len() == 0) | (data["mode_values"].str.len() == 0)]
     if not empty_sets.empty:
@@ -173,7 +192,7 @@ def _validate_normalized_rows(data: pd.DataFrame) -> None:
 
 def validate_pack_master_import(import_df: pd.DataFrame) -> PackMasterValidationReport:
     required_cols = {
-        "part_number", "supplier_code", "pack_kg", "length_mm", "width_mm", "height_mm", "is_stackable",
+        "part_number", "supplier_code", "pack_kg", "is_stackable",
         "ship_from_city", "ship_from_port_code", "ship_from_duns", "ship_from_location_code", "ship_to_locations",
         "allowed_modes", "incoterm", "incoterm_named_place",
     }
@@ -206,8 +225,21 @@ def validate_pack_master_import(import_df: pd.DataFrame) -> PackMasterValidation
                 if not raw or raw.lower() == "nan":
                     _add_error(row_number, field, "MISSING_REQUIRED_FIELD", f"{field} is required.")
 
-            for field in ["pack_kg", "length_mm", "width_mm", "height_mm"]:
-                val = pd.to_numeric(row.get(field), errors="coerce")
+            dim_field_values = {
+                "length_cm": row.get("length_cm", pd.NA),
+                "width_cm": row.get("width_cm", pd.NA),
+                "height_cm": row.get("height_cm", pd.NA),
+            }
+            if all(pd.isna(pd.to_numeric(v, errors="coerce")) for v in dim_field_values.values()):
+                legacy_field_values = {
+                    "length_mm": row.get("length_mm", pd.NA),
+                    "width_mm": row.get("width_mm", pd.NA),
+                    "height_mm": row.get("height_mm", pd.NA),
+                }
+                dim_field_values = legacy_field_values
+
+            for field in ["pack_kg", *dim_field_values.keys()]:
+                val = pd.to_numeric(row.get(field), errors="coerce") if field == "pack_kg" else pd.to_numeric(dim_field_values[field], errors="coerce")
                 if pd.isna(val) or float(val) <= 0:
                     _add_error(row_number, field, "NON_POSITIVE_VALUE", f"{field} must be a positive number.")
 
@@ -358,7 +390,7 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
                     row.incoterm,
                     row.incoterm_named_place,
                     str(getattr(row, "hts_code", "") or "").strip(),
-                    _clean_default_value(getattr(row, "uom", ""), "EA").upper(),
+                    _clean_default_value(getattr(row, "uom", ""), "KG").upper(),
                     _clean_default_value(getattr(row, "default_coo", ""), "UN").upper(),
                     ship_from_location_id,
                 ),
@@ -400,9 +432,9 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
                     1.0,
                     float(row.pack_kg),
                     0.0,
-                    float(row.length_mm) / 1000.0,
-                    float(row.width_mm) / 1000.0,
-                    float(row.height_mm) / 1000.0,
+                    float(row.length_cm) / 100.0,
+                    float(row.width_cm) / 100.0,
+                    float(row.height_cm) / 100.0,
                     1,
                     1,
                     int(row.is_stackable),
