@@ -9,7 +9,7 @@ The app now prioritizes a non-redundant template set where **pack master upload*
 
 Primary uploads:
 1. `pack_mdm_template.csv` (master pack data with supplier and freight routing)
-2. `raw_bom_template.csv` (part_number + raw_qty input translated by pack rules)
+2. `raw_bom_template.csv` (part_number + raw_qty or raw_weight_kg input translated by pack rules)
 3. `carrier_template.csv`, `rate_cards_template.csv`, `rate_charges_template.csv` (rate card and carrier data)
 4. `lanes_template.csv` (lane defaults)
 
@@ -42,6 +42,9 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | `allowed_modes` | Yes | Pipe-delimited mode codes (e.g., `OCEAN|TRUCK|AIR`). |
 | `incoterm` | Yes | One of: `EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`. |
 | `incoterm_named_place` | Yes | Named place associated with the incoterm. |
+| `plant_code` | No | Optional material plant code on SKU master; defaults to `UNSPECIFIED` when omitted. |
+| `uom` | No | Optional default SKU UOM (e.g., `KG`, `EA`, `METER`); used for BOM quantity context. |
+| `default_coo` | No | Optional default COO for customs on SKU master (ISO-2 like `CN`). |
 | `hts_code` | No | Optional default HTS code captured on SKU master (format like `7208.39.0015`). |
 
 Notes:
@@ -54,7 +57,8 @@ Use this upload when planners only have part-level required quantity and need pa
 | Column | Required | Description |
 | --- | --- | --- |
 | `part_number` | Yes | SKU part number from `sku_master`. |
-| `raw_qty` | Yes | Raw required quantity before pack rounding. |
+| `raw_qty` | Conditionally | Raw required quantity before pack rounding (interpreted in SKU `uom`). Required when `raw_weight_kg` is blank. |
+| `raw_weight_kg` | Conditionally | Raw required weight in kilograms. Required when `raw_qty` is blank; converted to quantity via default pack `kg_per_unit`. |
 | `supplier_code` | No | Recommended when part exists under multiple suppliers. |
 | `need_date` | No | Defaults to import date if omitted. |
 | `phase`, `mode_override`, `service_scope`, `miles`, `notes` | No | Optional planning metadata. |
@@ -62,6 +66,7 @@ Use this upload when planners only have part-level required quantity and need pa
 Behavior on import:
 - Data is mapped to `sku_id` using `part_number` (+ `supplier_code` when needed).
 - Rows are appended to `demand_lines` and translated to packs during planning using the default pack rule.
+- For each row, at least one of `raw_qty` or `raw_weight_kg` must be provided. If only `raw_weight_kg` is provided, quantity is calculated from default pack `kg_per_unit`.
 
 ## Carrier and rate imports
 - `carrier_template.csv` loads carrier master (`code`, `name`, `is_active`).

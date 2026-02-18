@@ -200,10 +200,10 @@ def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_
 
 
 def apply_raw_bom_import(import_frame: pd.DataFrame, supplier_key: str = "raw_bom_supplier_map") -> tuple[bool, str]:
-    required_cols = [name for name, spec in TABLE_SPECS["raw_bom_import"].items() if spec.required]
-    missing_required = [col for col in required_cols if col not in import_frame.columns]
-    if missing_required:
-        return False, "Raw BOM import is missing required columns: " + ", ".join(missing_required)
+    has_qty = "raw_qty" in import_frame.columns
+    has_weight = "raw_weight_kg" in import_frame.columns
+    if not has_qty and not has_weight:
+        return False, "Raw BOM import requires at least one quantity input column: raw_qty or raw_weight_kg"
 
     import_errors = validate_with_specs("raw_bom_import", import_frame)
     if "need_date" in import_frame.columns:
@@ -211,14 +211,79 @@ def apply_raw_bom_import(import_frame: pd.DataFrame, supplier_key: str = "raw_bo
     if import_errors:
         return False, "; ".join(import_errors)
 
-    mapped = import_frame.rename(columns={"raw_qty": "qty"}).copy()
-    if "need_date" not in mapped.columns:
-        mapped["need_date"] = date.today().isoformat()
-    mapped["need_date"] = mapped["need_date"].fillna(date.today().isoformat()).astype(str)
-    ok, msg = apply_demand_import(mapped, supplier_key=supplier_key)
-    if not ok:
-        return False, msg
-    return True, msg.replace("demand", "raw BOM")
+    working = import_frame.copy()
+    if has_qty:
+        working["raw_qty"] = pd.to_numeric(working["raw_qty"], errors="coerce")
+    else:
+        working["raw_qty"] = pd.NA
+    if has_weight:
+        working["raw_weight_kg"] = pd.to_numeric(working["raw_weight_kg"], errors="coerce")
+    else:
+        working["raw_weight_kg"] = pd.NA
+
+    sku_catalog = read_sku_catalog()
+    supplier_choices = st.session_state.setdefault(supplier_key, {})
+    merged, map_errors = map_import_demand_rows(working, sku_catalog, supplier_choices)
+    if "supplier_code" not in working.columns:
+        ambiguous_parts = merged.groupby("part_number")["sku_id"].nunique(dropna=True)
+        for pn in ambiguous_parts[ambiguous_parts > 1].index.tolist():
+            sup_opts = sku_catalog[sku_catalog["part_number"] == pn]["supplier_code"].tolist()
+            if not sup_opts:
+                continue
+            current = supplier_choices.get(pn, sup_opts[0])
+            supplier_choices[pn] = st.selectbox(
+                f"Select supplier for {pn}",
+                sup_opts,
+                index=sup_opts.index(current) if current in sup_opts else 0,
+                key=f"{supplier_key}_{pn}",
+            )
+        merged, map_errors = map_import_demand_rows(working, sku_catalog, supplier_choices)
+    if map_errors:
+        return False, "; ".join(map_errors)
+
+    pack_catalog = pd.read_sql_query(
+        """
+        SELECT pr.sku_id, pr.kg_per_unit, pr.is_default
+        FROM packaging_rules pr
+        ORDER BY pr.sku_id, pr.is_default DESC, pr.id
+        """,
+        get_conn(),
+    )
+    pack_default = pack_catalog.drop_duplicates(subset=["sku_id"], keep="first")[["sku_id", "kg_per_unit"]]
+    merged = merged.merge(pack_default, on="sku_id", how="left")
+
+    qty_missing = merged["raw_qty"].isna()
+    weight_available = merged["raw_weight_kg"].notna()
+    merged["qty"] = merged["raw_qty"]
+
+    convertible = qty_missing & weight_available
+    kg_factor = pd.to_numeric(merged["kg_per_unit"], errors="coerce")
+    merged.loc[convertible & (kg_factor > 0), "qty"] = merged.loc[convertible & (kg_factor > 0), "raw_weight_kg"] / kg_factor[convertible & (kg_factor > 0)]
+
+    unresolved = merged[merged["qty"].isna()]
+    if not unresolved.empty:
+        bad_rows = (unresolved.index + 2).astype(str).tolist()
+        return False, "Raw BOM import requires raw_qty or convertible raw_weight_kg for every row (problem rows: " + ", ".join(bad_rows) + ")"
+
+    merged["qty"] = pd.to_numeric(merged["qty"], errors="coerce")
+    if (merged["qty"] <= 0).any():
+        bad_rows = ((merged[merged["qty"] <= 0].index + 2).astype(str).tolist())
+        return False, "Computed qty must be > 0 for every row (problem rows: " + ", ".join(bad_rows) + ")"
+
+    to_insert = merged.copy()
+    if "need_date" not in to_insert.columns:
+        to_insert["need_date"] = date.today().isoformat()
+    to_insert["need_date"] = to_insert["need_date"].fillna(date.today().isoformat()).astype(str)
+
+    for optional_col in ["coo_override", "priority", "notes", "phase", "mode_override", "service_scope", "miles"]:
+        if optional_col not in to_insert.columns:
+            to_insert[optional_col] = pd.NA
+
+    cols = ["sku_id", "need_date", "qty", "coo_override", "priority", "notes", "phase", "mode_override", "service_scope", "miles"]
+    conn = get_conn()
+    with conn:
+        to_insert[cols].to_sql("demand_lines", conn, if_exists="append", index=False)
+    return True, f"Imported {len(to_insert)} raw BOM rows"
 
 
 def apply_table_upload(import_frame: pd.DataFrame, *, table_key: str, table_name: str, key_cols: list[str], bool_cols: list[str] | None = None) -> tuple[bool, str]:
@@ -692,7 +757,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             "Upload pack master data csv",
             type=["csv"],
             key="pack_mdm_upload",
-            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, optional hts_code, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
+            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, optional plant_code/uom/default_coo/hts_code, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
         )
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -1074,7 +1139,7 @@ Example: CN + OCEAN = 35 days.""")
 
         st.divider()
         st.subheader("2) Raw BOM upload")
-        st.caption("Upload raw_bom_template.csv with part_number and raw_qty. The app maps to SKU, then uses pack rules to translate into pack quantities during planning.")
+        st.caption("Upload raw_bom_template.csv with part_number and either raw_qty (SKU UOM) or raw_weight_kg. Only one is required per row; raw_weight_kg is converted using default pack kg_per_unit.")
         raw_bom_upload = st.file_uploader("Upload raw BOM csv", type=["csv"], key="hub_raw_bom_upload")
         if raw_bom_upload is not None:
             raw_bom_df = pd.read_csv(raw_bom_upload)

@@ -1,0 +1,2 @@
+part_number,supplier_code,need_date,raw_qty,raw_weight_kg,phase,mode_override,service_scope,miles,notes
+MFG-88421,DEFAULT,2026-03-10,250,1250,Sample,OCEAN,P2D,320,Round to full standard packs
