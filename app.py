@@ -1422,7 +1422,10 @@ elif section == "Planner":
 
 
     with cube_tab:
-        render_about("Cube Out", "Select multiple SKUs and calculate how many equipment units are required based on each SKU default pack rule. Enter required quantity in the SKU UOM (KG/METER/GALLON/EA/etc.).")
+        render_about(
+            "Cube Out",
+            "Select multiple SKUs and calculate equipment requirements from default pack rules. You can enter quantity as SKU UOM or as standard packs; all downstream cube-out math runs on standard packs.",
+        )
         skus = read_sku_catalog()
         packs = read_table("packaging_rules")
         eq = pd.read_sql_query("SELECT * FROM equipment_presets WHERE active = 1", get_conn())
@@ -1446,27 +1449,75 @@ elif section == "Planner":
             if not selected_ids:
                 st.info("Select one or more SKUs to begin cube-out.")
             else:
-                defaults = packs[packs["is_default"] == 1][["sku_id", "pack_name", "units_per_pack", "kg_per_unit", "pack_tare_kg", "dim_l_m", "dim_w_m", "dim_h_m"]]
+                defaults = packs[packs["is_default"] == 1][
+                    ["sku_id", "pack_name", "units_per_pack", "kg_per_unit", "pack_tare_kg", "dim_l_m", "dim_w_m", "dim_h_m"]
+                ]
                 calc_rows = skus[skus["sku_id"].isin(selected_ids)][["sku_id", "part_number", "supplier_code", "plant_code", "uom"]].merge(defaults, on="sku_id", how="left")
+                calc_rows["qty_basis"] = "UOM units"
                 calc_rows["qty_required"] = 0.0
                 calc_rows["uom"] = calc_rows["uom"].replace("", pd.NA).fillna("EA")
 
                 edited = st.data_editor(
-                    calc_rows[["sku_id", "part_number", "supplier_code", "plant_code", "uom", "pack_name", "units_per_pack", "kg_per_unit", "dim_l_m", "dim_w_m", "dim_h_m", "qty_required"]],
+                    calc_rows[
+                        [
+                            "sku_id",
+                            "part_number",
+                            "supplier_code",
+                            "plant_code",
+                            "uom",
+                            "pack_name",
+                            "units_per_pack",
+                            "kg_per_unit",
+                            "dim_l_m",
+                            "dim_w_m",
+                            "dim_h_m",
+                            "qty_basis",
+                            "qty_required",
+                        ]
+                    ],
                     width="stretch",
                     num_rows="fixed",
-                    disabled=["sku_id", "part_number", "supplier_code", "plant_code", "uom", "pack_name", "units_per_pack", "kg_per_unit", "dim_l_m", "dim_w_m", "dim_h_m"],
-                    column_config={"qty_required": st.column_config.NumberColumn("qty_required", min_value=0.0, help="Required amount in this SKU UOM")},
+                    disabled=[
+                        "sku_id",
+                        "part_number",
+                        "supplier_code",
+                        "plant_code",
+                        "uom",
+                        "pack_name",
+                        "units_per_pack",
+                        "kg_per_unit",
+                        "dim_l_m",
+                        "dim_w_m",
+                        "dim_h_m",
+                    ],
+                    column_config={
+                        "qty_basis": st.column_config.SelectboxColumn(
+                            "qty_basis",
+                            options=["UOM units", "Standard packs"],
+                            help="How qty_required should be interpreted.",
+                        ),
+                        "qty_required": st.column_config.NumberColumn(
+                            "qty_required",
+                            min_value=0.0,
+                            help="Required amount in selected qty_basis.",
+                        ),
+                    },
                 )
 
                 results: list[dict] = []
+                demand_seed: list[dict] = []
                 for _, row in edited.iterrows():
                     qty_required = float(row.get("qty_required") or 0)
                     units_per_pack = float(row.get("units_per_pack") or 0)
                     if qty_required <= 0 or units_per_pack <= 0:
                         continue
 
-                    packs_needed = int(ceil(qty_required / units_per_pack))
+                    qty_basis = str(row.get("qty_basis") or "UOM units")
+                    required_units = qty_required * units_per_pack if qty_basis == "Standard packs" else qty_required
+                    packs_needed = int(ceil(required_units / units_per_pack))
+                    shipped_units = packs_needed * units_per_pack
+                    excess_units = max(0.0, shipped_units - required_units)
+
                     gross_pack_weight = (units_per_pack * float(row.get("kg_per_unit") or 0)) + float(row.get("pack_tare_kg") or 0)
                     pack_cube = float(row.get("dim_l_m") or 0) * float(row.get("dim_w_m") or 0) * float(row.get("dim_h_m") or 0)
                     total_weight_kg = packs_needed * gross_pack_weight
@@ -1494,25 +1545,76 @@ elif section == "Planner":
                         equipment_needed = equipment_count_for_packs(packs_needed, packs_fit)
                         if equipment_needed == 0:
                             continue
-                        results.append({
+                        results.append(
+                            {
+                                "sku_id": int(row["sku_id"]),
+                                "part_number": row["part_number"],
+                                "uom": row["uom"],
+                                "qty_basis": qty_basis,
+                                "qty_required": qty_required,
+                                "required_units": required_units,
+                                "packs_needed": packs_needed,
+                                "shipped_units": shipped_units,
+                                "excess_units": round(excess_units, 3),
+                                "total_weight_kg": round(total_weight_kg, 3),
+                                "total_volume_m3": round(total_volume_m3, 3),
+                                "mode": eq_obj.mode,
+                                "equipment": eq_obj.name,
+                                "packs_fit": packs_fit,
+                                "equipment_needed": equipment_needed,
+                                "est_pack_capacity": packs_fit * equipment_needed,
+                                "limiting_constraint": fit.get("limiting_constraint"),
+                                "fit_diagnostics": "constraints_engine:max_units_per_conveyance@1.0.0",
+                            }
+                        )
+
+                    demand_seed.append(
+                        {
                             "sku_id": int(row["sku_id"]),
                             "part_number": row["part_number"],
                             "uom": row["uom"],
+                            "qty_basis": qty_basis,
                             "qty_required": qty_required,
+                            "required_units": required_units,
                             "packs_needed": packs_needed,
-                            "total_weight_kg": round(total_weight_kg, 3),
-                            "total_volume_m3": round(total_volume_m3, 3),
-                            "mode": eq_obj.mode,
-                            "equipment": eq_obj.name,
-                            "equipment_needed": equipment_needed,
-                            "limiting_constraint": fit.get("limiting_constraint"),
-                            "fit_diagnostics": "constraints_engine:max_units_per_conveyance@1.0.0",
-                        })
+                        }
+                    )
 
                 if results:
                     out = pd.DataFrame(results)
+                    st.subheader("Cube-out options")
                     st.dataframe(out, width="stretch")
                     st.download_button("Download cube-out results", data=out.to_csv(index=False).encode(), file_name="cube_out_results.csv", mime="text/csv")
+
+                    st.subheader("Allocation planner (packs)")
+                    alloc_df = out[["sku_id", "part_number", "mode", "equipment", "packs_fit", "equipment_needed", "est_pack_capacity"]].drop_duplicates().copy()
+                    alloc_df = alloc_df.merge(
+                        pd.DataFrame(demand_seed)[["sku_id", "packs_needed"]].drop_duplicates(),
+                        on="sku_id",
+                        how="left",
+                    )
+                    alloc_df["allocate_packs"] = 0.0
+                    edited_alloc = st.data_editor(
+                        alloc_df,
+                        width="stretch",
+                        hide_index=True,
+                        num_rows="fixed",
+                        column_config={
+                            "packs_fit": st.column_config.NumberColumn("Packs / conveyance", disabled=True),
+                            "equipment_needed": st.column_config.NumberColumn("Est conveyance count", disabled=True),
+                            "est_pack_capacity": st.column_config.NumberColumn("Est pack capacity", disabled=True),
+                            "packs_needed": st.column_config.NumberColumn("Required packs (SKU)", disabled=True),
+                            "allocate_packs": st.column_config.NumberColumn("Allocate packs", min_value=0.0, step=1.0),
+                        },
+                        key="cube_out_allocate",
+                    )
+                    edited_alloc["allocate_packs"] = pd.to_numeric(edited_alloc["allocate_packs"], errors="coerce").fillna(0.0)
+                    alloc_rollup = edited_alloc.groupby(["sku_id", "part_number", "packs_needed"], as_index=False)["allocate_packs"].sum()
+                    alloc_rollup["remaining_packs"] = alloc_rollup["packs_needed"] - alloc_rollup["allocate_packs"]
+                    st.caption("Per-SKU pack allocation exhaustion status")
+                    st.dataframe(alloc_rollup, width="stretch", hide_index=True)
+                    if (alloc_rollup["remaining_packs"] < 0).any():
+                        st.warning("One or more SKUs are over-allocated. Reduce allocated packs until remaining_packs is zero.")
                 else:
                     st.info("Enter qty_required > 0 for at least one SKU with a default pack rule.")
 
