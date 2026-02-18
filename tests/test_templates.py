@@ -40,6 +40,9 @@ def test_pack_mdm_canonical_columns_present():
         "allowed_modes",
         "incoterm",
         "incoterm_named_place",
+        "plant_code",
+        "uom",
+        "default_coo",
     }
     assert required.issubset(set(cols.keys()))
     assert "is_default" not in cols
@@ -65,6 +68,9 @@ def test_pack_mdm_template_header_matches_v2_spec(tmp_path, monkeypatch):
         "allowed_modes",
         "incoterm",
         "incoterm_named_place",
+        "plant_code",
+        "uom",
+        "default_coo",
     ]:
         assert col in header
 
@@ -84,4 +90,4 @@ def test_streamlined_template_catalog():
 
 def test_raw_bom_template_columns_present():
     cols = TABLE_SPECS["raw_bom_import"]
-    assert {"part_number", "raw_qty"}.issubset(set(cols.keys()))
+    assert {"part_number", "raw_qty", "raw_weight_kg"}.issubset(set(cols.keys()))

@@ -76,6 +76,14 @@ def _to_bool_int(raw_value: object) -> int:
     return 1 if text in {"1", "true", "yes", "y"} else 0
 
 
+
+
+def _clean_default_value(raw_value: object, fallback: str) -> str:
+    text = str(raw_value or "").strip()
+    if not text or text.lower() == "nan":
+        return fallback
+    return text
+
 def _canonical_ship_from_key(row: pd.Series) -> str:
     return "|".join(
         [
@@ -92,6 +100,18 @@ def _normalize_import(import_df: pd.DataFrame) -> pd.DataFrame:
     data["part_number"] = data["part_number"].apply(_normalize_code_text)
     data["supplier_code"] = data["supplier_code"].apply(_normalize_code_text)
     data["incoterm"] = data["incoterm"].astype(str).str.strip().str.upper()
+    if "plant_code" in data.columns:
+        data["plant_code"] = data["plant_code"].apply(_normalize_code_text)
+    else:
+        data["plant_code"] = ""
+    if "uom" in data.columns:
+        data["uom"] = data["uom"].astype(str).str.strip().str.upper()
+    else:
+        data["uom"] = ""
+    if "default_coo" in data.columns:
+        data["default_coo"] = data["default_coo"].astype(str).str.strip().str.upper()
+    else:
+        data["default_coo"] = ""
     if "hts_code" in data.columns:
         data["hts_code"] = data["hts_code"].astype(str).str.strip()
     else:
@@ -331,15 +351,15 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
                 (
                     row.part_number,
                     supplier_id,
-                    str(getattr(row, "plant_code", "UNSPECIFIED") or "UNSPECIFIED").strip().upper(),
+                    _clean_default_value(getattr(row, "plant_code", ""), "UNSPECIFIED").upper(),
                     row.ship_from_duns,
                     str(getattr(row, "description", "") or "").strip(),
                     row.ship_from_location_code,
                     row.incoterm,
                     row.incoterm_named_place,
                     str(getattr(row, "hts_code", "") or "").strip(),
-                    str(getattr(row, "uom", "EA") or "EA").strip().upper(),
-                    str(getattr(row, "default_coo", "UN") or "UN").strip().upper(),
+                    _clean_default_value(getattr(row, "uom", ""), "EA").upper(),
+                    _clean_default_value(getattr(row, "default_coo", ""), "UN").upper(),
                     ship_from_location_id,
                 ),
             )
