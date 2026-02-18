@@ -20,9 +20,9 @@ def _sample_df(ship_tos: str = "USLAX_DC01|USLGB_DC02", modes: str = "OCEAN|TRUC
                 "part_number": "PN_10001",
                 "supplier_code": "MAEU",
                 "pack_kg": pack_kg,
-                "length_mm": 1200,
-                "width_mm": 800,
-                "height_mm": 900,
+                "length_cm": 120,
+                "width_cm": 80,
+                "height_cm": 90,
                 "is_stackable": 1,
                 "max_stack": 3,
                 "ship_from_city": "SHANGHAI",
@@ -98,7 +98,7 @@ def test_pack_master_validation_report_hard_fail_rules() -> None:
 
     df = _sample_df().copy()
     df.loc[0, "pack_kg"] = 0
-    df.loc[0, "length_mm"] = -1
+    df.loc[0, "length_cm"] = -1
     df.loc[0, "allowed_modes"] = "OCEAN|RAIL"
     df.loc[0, "incoterm"] = "XYZ"
     df.loc[0, "is_stackable"] = 1
@@ -206,3 +206,45 @@ def test_replace_sku_token_set_replaces_existing_rows(tmp_path: Path, monkeypatc
 
     assert inserted == 2
     assert [r["destination_code"] for r in rows] == ["USLAX_DC01", "USLGB_DC02"]
+
+
+def test_pack_master_import_defaults_uom_to_kg_and_updates_coo(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+    db.run_migrations()
+
+    from services.master_data_import import apply_pack_master_import
+
+    conn = db.get_conn()
+    df = _sample_df().copy()
+    df["uom"] = ""
+    df["default_coo"] = "kr"
+
+    apply_pack_master_import(conn, df)
+
+    sku = conn.execute("SELECT uom, default_coo FROM sku_master WHERE part_number = ?", ("PN_10001",)).fetchone()
+    assert sku["uom"] == "KG"
+    assert sku["default_coo"] == "KR"
+
+
+def test_pack_master_upload_accepts_legacy_mm_dimension_columns(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+    db.run_migrations()
+
+    import app
+
+    upload_df = _sample_df().copy()
+    upload_df = upload_df.drop(columns=["length_cm", "width_cm", "height_cm"])
+    upload_df["length_mm"] = 1200
+    upload_df["width_mm"] = 800
+    upload_df["height_mm"] = 900
+
+    ok, msg, payload = app.apply_pack_master_upload(upload_df)
+
+    assert ok, msg
+    assert payload["summary"]["failed"] == 0
+
+    conn = db.get_conn()
+    dims = conn.execute("SELECT dim_l_m, dim_w_m, dim_h_m FROM packaging_rules LIMIT 1").fetchone()
+    assert dims["dim_l_m"] == 1.2
+    assert dims["dim_w_m"] == 0.8
+    assert dims["dim_h_m"] == 0.9

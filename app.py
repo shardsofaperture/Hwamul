@@ -314,7 +314,16 @@ def apply_table_upload(import_frame: pd.DataFrame, *, table_key: str, table_name
 
 def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str, dict[str, object]]:
     required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
-    missing_pack_cols = [col for col in required_pack_cols if col not in import_frame.columns]
+    legacy_dim_aliases = {
+        "length_cm": "length_mm",
+        "width_cm": "width_mm",
+        "height_cm": "height_mm",
+    }
+    missing_pack_cols = [
+        col
+        for col in required_pack_cols
+        if col not in import_frame.columns and not (col in legacy_dim_aliases and legacy_dim_aliases[col] in import_frame.columns)
+    ]
 
     validation_report = validate_pack_master_import(import_frame)
     report_payload = validation_report.as_dict()
@@ -757,7 +766,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             "Upload pack master data csv",
             type=["csv"],
             key="pack_mdm_upload",
-            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, optional plant_code/uom/default_coo/hts_code, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
+            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_cm, width_cm, height_cm (legacy *_mm also accepted), is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, optional plant_code/uom/default_coo/hts_code, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
         )
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -1438,7 +1447,7 @@ elif section == "Planner":
                 sku_options["part_number"]
                 + " | SUP:" + sku_options["supplier_code"]
                 + " | PLANT:" + sku_options["plant_code"].fillna("")
-                + " | UOM:" + sku_options["uom"].fillna("EA")
+                + " | UOM:" + sku_options["uom"].fillna("KG")
             )
             selected_ids = st.multiselect(
                 "Select SKUs",
@@ -1455,7 +1464,7 @@ elif section == "Planner":
                 calc_rows = skus[skus["sku_id"].isin(selected_ids)][["sku_id", "part_number", "supplier_code", "plant_code", "uom"]].merge(defaults, on="sku_id", how="left")
                 calc_rows["qty_basis"] = "UOM units"
                 calc_rows["qty_required"] = 0.0
-                calc_rows["uom"] = calc_rows["uom"].replace("", pd.NA).fillna("EA")
+                calc_rows["uom"] = calc_rows["uom"].replace("", pd.NA).fillna("KG")
 
                 edited = st.data_editor(
                     calc_rows[

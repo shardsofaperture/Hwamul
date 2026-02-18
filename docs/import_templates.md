@@ -30,9 +30,9 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | `part_number` | Yes | SKU part number from `sku_master`. |
 | `supplier_code` | Yes | Supplier code to tie the row to a supplier-specific SKU. |
 | `pack_kg` | Yes | Numeric `>= 0.001`; gross weight per pack in kilograms (always kg, regardless of SKU UOM). |
-| `length_mm` | Yes | Numeric `>= 1`; pack length in millimeters. |
-| `width_mm` | Yes | Numeric `>= 1`; pack width in millimeters. |
-| `height_mm` | Yes | Numeric `>= 1`; pack height in millimeters. |
+| `length_cm` | Yes | Numeric `>= 0.1`; pack length in centimeters. |
+| `width_cm` | Yes | Numeric `>= 0.1`; pack width in centimeters. |
+| `height_cm` | Yes | Numeric `>= 0.1`; pack height in centimeters. |
 | `is_stackable` | Yes | Boolean `1` or `0`. |
 | `ship_from_city` | Yes | Origin city (text). |
 | `ship_from_port_code` | Yes | Uppercase alphanumeric code, 3-10 chars (e.g., `CNSHA`). |
@@ -43,13 +43,14 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | `incoterm` | Yes | One of: `EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`. |
 | `incoterm_named_place` | Yes | Named place associated with the incoterm. |
 | `plant_code` | No | Optional material plant code on SKU master; defaults to `UNSPECIFIED` when omitted. |
-| `uom` | No | Optional default SKU UOM (e.g., `KG`, `EA`, `METER`); used for BOM quantity context. |
+| `uom` | No | Optional default SKU UOM (e.g., `KG`, `LB`, `EA`, `METER`, `FT`); used for BOM quantity context. Defaults to `KG` when omitted. |
 | `default_coo` | No | Optional default COO for customs on SKU master (ISO-2 like `CN`). |
 | `hts_code` | No | Optional default HTS code captured on SKU master (format like `7208.39.0015`). |
 
 Notes:
 - `raw_qty`/demand quantity is interpreted in the SKU's `uom` (KG, METER, EA, etc.); this is a generic UOM field.
 - `pack_kg` is always **kilograms per pack** and is separate from the SKU UOM.
+- Legacy `length_mm`/`width_mm`/`height_mm` columns are still accepted for backward compatibility and auto-converted to cm.
 
 ## Raw BOM import (`raw_bom_template.csv`)
 Use this upload when planners only have part-level required quantity and need pack conversion in-app.
