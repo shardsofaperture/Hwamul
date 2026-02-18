@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 import sqlite3
 
 import pandas as pd
@@ -15,6 +16,41 @@ class PackMasterImportResult:
     ship_to_rows_replaced: int
     allowed_modes_rows_replaced: int
     incoterms_upserted: int
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    row_number: int
+    field: str
+    code: str
+    message: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "row_number": self.row_number,
+            "field": self.field,
+            "code": self.code,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class PackMasterValidationReport:
+    errors: list[ValidationIssue]
+    warnings: list[ValidationIssue]
+    summary: dict[str, object]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "errors": [issue.as_dict() for issue in self.errors],
+            "warnings": [issue.as_dict() for issue in self.warnings],
+            "summary": self.summary,
+        }
+
+
+CANONICAL_MODES = {"TRUCK", "OCEAN", "AIR"}
+CANONICAL_INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"}
+STRICT_PORT_CODE_REGEX = re.compile(r"^[A-Z]{5}$")
 
 
 def _split_pipe_list(raw_value: object) -> list[str]:
@@ -102,6 +138,113 @@ def _validate_normalized_rows(data: pd.DataFrame) -> None:
     if not empty_sets.empty:
         row_nums = ", ".join(map(str, empty_sets.index.tolist()))
         raise ValueError(f"ship_to_locations and allowed_modes must each contain at least one token (bad row indexes: {row_nums})")
+
+
+def validate_pack_master_import(import_df: pd.DataFrame) -> PackMasterValidationReport:
+    required_cols = {
+        "part_number", "supplier_code", "pack_kg", "length_mm", "width_mm", "height_mm", "is_stackable",
+        "ship_from_city", "ship_from_port_code", "ship_from_duns", "ship_from_location_code", "ship_to_locations",
+        "allowed_modes", "incoterm", "incoterm_named_place",
+    }
+    errors: list[ValidationIssue] = []
+    warnings: list[ValidationIssue] = []
+    missing_cols = sorted(c for c in required_cols if c not in import_df.columns)
+    for col in missing_cols:
+        errors.append(ValidationIssue(0, col, "MISSING_REQUIRED_COLUMN", f"Required column '{col}' is missing."))
+
+    data = _normalize_import(import_df) if not missing_cols else import_df.copy()
+    total_rows = int(len(import_df.index))
+    error_rows: set[int] = set()
+    warn_rows: set[int] = set()
+
+    def _add_error(row_number: int, field: str, code: str, message: str) -> None:
+        errors.append(ValidationIssue(row_number, field, code, message))
+        if row_number > 0:
+            error_rows.add(row_number)
+
+    def _add_warning(row_number: int, field: str, code: str, message: str) -> None:
+        warnings.append(ValidationIssue(row_number, field, code, message))
+        if row_number > 0:
+            warn_rows.add(row_number)
+
+    if not missing_cols:
+        for idx, row in data.iterrows():
+            row_number = int(idx) + 2
+            for field in ["part_number", "supplier_code", "incoterm", "incoterm_named_place", "ship_to_locations", "allowed_modes"]:
+                raw = str(row.get(field, "")).strip()
+                if not raw or raw.lower() == "nan":
+                    _add_error(row_number, field, "MISSING_REQUIRED_FIELD", f"{field} is required.")
+
+            for field in ["pack_kg", "length_mm", "width_mm", "height_mm"]:
+                val = pd.to_numeric(row.get(field), errors="coerce")
+                if pd.isna(val) or float(val) <= 0:
+                    _add_error(row_number, field, "NON_POSITIVE_VALUE", f"{field} must be a positive number.")
+
+            stackable = _to_bool_int(row.get("is_stackable")) == 1
+            max_stack = pd.to_numeric(row.get("max_stack"), errors="coerce")
+            if stackable and (pd.isna(max_stack) or float(max_stack) <= 0):
+                _add_error(
+                    row_number,
+                    "max_stack",
+                    "INVALID_MAX_STACK",
+                    "max_stack must be a positive integer when is_stackable=true.",
+                )
+
+            mode_tokens = _split_pipe_list(row.get("allowed_modes"))
+            for token in mode_tokens:
+                if token not in CANONICAL_MODES:
+                    _add_error(row_number, "allowed_modes", "INVALID_MODE_TOKEN", f"Invalid mode token '{token}'.")
+            if not mode_tokens:
+                _add_error(row_number, "allowed_modes", "MISSING_REQUIRED_FIELD", "allowed_modes must contain at least one token.")
+
+            incoterm = str(row.get("incoterm", "")).strip().upper()
+            if incoterm and incoterm not in CANONICAL_INCOTERMS:
+                _add_error(row_number, "incoterm", "INVALID_INCOTERM", f"Invalid incoterm token '{incoterm}'.")
+
+            port_code = str(row.get("ship_from_port_code", "")).strip().upper()
+            if port_code and not STRICT_PORT_CODE_REGEX.match(port_code):
+                _add_warning(
+                    row_number,
+                    "ship_from_port_code",
+                    "WEAK_PORT_CODE_FORMAT",
+                    "ship_from_port_code does not match strict 5-letter format (e.g., CNSHA).",
+                )
+
+        duplicate_keys = (
+            data.assign(_variant=data.get("pack_name", ""))
+            .assign(_dedupe_key=lambda d: d["supplier_code"].astype(str) + "|" + d["part_number"].astype(str) + "|" + d["_variant"].astype(str))
+            ["_dedupe_key"]
+        )
+        duplicate_key_values = set(duplicate_keys[duplicate_keys.duplicated(keep=False)].tolist())
+        if duplicate_key_values:
+            for idx, row in data.iterrows():
+                variant = str(row.get("pack_name", ""))
+                key = f"{row.get('supplier_code')}|{row.get('part_number')}|{variant}"
+                if key in duplicate_key_values:
+                    _add_warning(
+                        int(idx) + 2,
+                        "part_number",
+                        "DUPLICATE_SUPPLIER_PART_VARIANT",
+                        "Duplicate supplier+part(+variant) row detected in upload.",
+                    )
+
+    attempted_entities = {
+        "suppliers": int(import_df["supplier_code"].astype(str).str.strip().replace("nan", "").ne("").sum()) if "supplier_code" in import_df.columns else 0,
+        "parts": int(import_df["part_number"].astype(str).str.strip().replace("nan", "").ne("").sum()) if "part_number" in import_df.columns else 0,
+        "variants": int(import_df["pack_name"].astype(str).str.strip().replace("nan", "").ne("").sum()) if "pack_name" in import_df.columns else 0,
+    }
+    summary = {
+        "total": total_rows,
+        "accepted": max(total_rows - len(error_rows), 0),
+        "failed": len(error_rows),
+        "warned": len(warn_rows),
+        "affected_entities": {
+            "attempted": attempted_entities,
+            "errored_row_numbers": sorted(error_rows),
+            "warned_row_numbers": sorted(warn_rows),
+        },
+    }
+    return PackMasterValidationReport(errors=errors, warnings=warnings, summary=summary)
 
 
 def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) -> PackMasterImportResult:
