@@ -99,7 +99,18 @@ sku_choice = st.selectbox("Supplier / Part Number", sku_df["sku_label"].tolist()
 sku_row = sku_df[sku_df["sku_label"] == sku_choice].iloc[0]
 sku_id = int(sku_row["sku_id"])
 
-required_units = st.number_input("Required units", min_value=0.0, step=1.0, value=0.0)
+qty_basis = st.selectbox(
+    "Quantity entry basis",
+    ["UOM units", "Standard packs"],
+    help="Choose whether the entered quantity is product UOM units or pack count.",
+)
+required_qty = st.number_input(
+    "Required quantity",
+    min_value=0.0,
+    step=1.0,
+    value=0.0,
+    help="Interpretation depends on quantity entry basis.",
+)
 need_date = st.date_input("Need date", value=date.today())
 coo_override = st.text_input("COO override (optional)", value="")
 
@@ -133,6 +144,22 @@ truck_choice = st.selectbox("Truck/Chassis Config", truck_options, index=0)
 truck_config_code = truck_choice.split(" - ")[0]
 
 if st.button("Run Plan", type="primary"):
+    selected_pack_rule = None
+    if pack_rule_id is not None and not pack_rules.empty:
+        selected_pack_rule = pack_rules[pack_rules["id"] == pack_rule_id]
+        selected_pack_rule = selected_pack_rule.iloc[0].to_dict() if not selected_pack_rule.empty else None
+    elif not pack_rules.empty:
+        selected_pack_rule = pack_rules.iloc[0].to_dict()
+
+    units_per_pack = float((selected_pack_rule or {}).get("units_per_pack") or 0.0)
+    if qty_basis == "Standard packs":
+        if units_per_pack <= 0:
+            st.error("Cannot convert standard packs because selected pack rule has invalid units_per_pack.")
+            st.stop()
+        required_units = required_qty * units_per_pack
+    else:
+        required_units = required_qty
+
     result = plan_quick_run(
         conn=conn,
         sku_id=sku_id,
@@ -152,7 +179,7 @@ if st.button("Run Plan", type="primary"):
     st.subheader("Summary")
     st.write(
         f"**{sku['part_number']}** — {sku.get('description') or ''}  \\n"
-        f"COO: `{sku['coo']}` | Required units: `{result['required_units']}` | "
+        f"COO: `{sku['coo']}` | Entered qty: `{required_qty}` ({qty_basis}) | Required units: `{result['required_units']}` | "
         f"Shipped units: `{result['shipped_units']}` | Excess: `{result['excess_units']}` | Packs: `{result['packs_required']}`"
     )
 
@@ -160,12 +187,73 @@ if st.button("Run Plan", type="primary"):
     if not eq_df.empty:
         eq_df["cube_util%"] = (eq_df["cube_util"] * 100).round(1)
         eq_df["weight_util%"] = (eq_df["weight_util"] * 100).round(1)
-        st.subheader("Equipment fit")
-        st.dataframe(
-            eq_df[["mode", "equipment_code", "equipment_name", "packs_per_layer", "layers_allowed", "packs_fit", "limiting_constraint", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
+        st.subheader("Equipment fit by mode")
+        for mode_name, mode_group in eq_df.groupby("mode", sort=True):
+            st.markdown(f"**{mode_name}**")
+            st.dataframe(
+                mode_group[["equipment_code", "equipment_name", "packs_per_layer", "layers_allowed", "packs_fit", "limiting_constraint", "equipment_count", "cube_util%", "weight_util%", "est_cost"]],
+                width="stretch",
+                hide_index=True,
+            )
+
+        st.subheader("Shipment allocation planner")
+        total_required_packs = float(result["packs_required"])
+        alloc_seed = eq_df[
+            ["mode", "equipment_code", "equipment_name", "packs_fit", "equipment_count"]
+        ].drop_duplicates().copy()
+        alloc_seed["auto_capacity_packs"] = alloc_seed["packs_fit"] * alloc_seed["equipment_count"]
+
+        auto_fill_choice = st.selectbox(
+            "Auto-fill allocations",
+            ["Manual (start at 0)", "Put all required packs on first row", "Use estimated equipment counts"],
+            help="Auto-fill values are in standard packs after any UOM-to-pack conversion.",
+            key=f"quick_alloc_strategy_{sku_id}_{need_date.isoformat()}",
+        )
+
+        alloc_seed["allocate_packs"] = 0.0
+        if auto_fill_choice == "Put all required packs on first row" and not alloc_seed.empty:
+            alloc_seed.loc[alloc_seed.index[0], "allocate_packs"] = total_required_packs
+        elif auto_fill_choice == "Use estimated equipment counts":
+            remaining_for_fill = total_required_packs
+            for idx in alloc_seed.index:
+                row_capacity = float(alloc_seed.loc[idx, "auto_capacity_packs"])
+                assign = min(remaining_for_fill, max(0.0, row_capacity))
+                alloc_seed.loc[idx, "allocate_packs"] = assign
+                remaining_for_fill -= assign
+                if remaining_for_fill <= 0:
+                    break
+
+        edited_alloc = st.data_editor(
+            alloc_seed,
             width="stretch",
             hide_index=True,
+            num_rows="fixed",
+            column_config={
+                "packs_fit": st.column_config.NumberColumn("Packs / conveyance", disabled=True),
+                "equipment_count": st.column_config.NumberColumn("Est conveyance count", disabled=True),
+                "auto_capacity_packs": st.column_config.NumberColumn("Est pack capacity", disabled=True),
+                "allocate_packs": st.column_config.NumberColumn(
+                    "Allocate packs",
+                    min_value=0.0,
+                    step=1.0,
+                    help="How many standard packs to assign to this mode/equipment option.",
+                ),
+            },
+            key=f"quick_alloc_{sku_id}_{need_date.isoformat()}",
         )
+        edited_alloc["allocate_packs"] = pd.to_numeric(edited_alloc["allocate_packs"], errors="coerce").fillna(0.0)
+        allocated_packs = float(edited_alloc["allocate_packs"].sum())
+        remaining_packs = total_required_packs - allocated_packs
+        st.caption(
+            f"Required packs: **{total_required_packs:.0f}** | Allocated packs: **{allocated_packs:.0f}** | Remaining packs: **{remaining_packs:.0f}**"
+        )
+        if remaining_packs < 0:
+            st.warning("Allocated packs exceed required packs. Reduce assigned values to avoid over-allocation.")
+
+        by_mode = edited_alloc.groupby("mode", as_index=False)["allocate_packs"].sum().rename(columns={"allocate_packs": "allocated_packs"})
+        if not by_mode.empty:
+            st.markdown("**Allocation by mode**")
+            st.dataframe(by_mode, width="stretch", hide_index=True)
 
 
 
