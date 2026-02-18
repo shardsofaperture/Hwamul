@@ -4,7 +4,7 @@ Core entities used by planning workflows:
 
 - **suppliers**: supplier master (`supplier_code`, `supplier_name`).
 - **sku_master**: supplier-specific part numbers (`part_number`, `supplier_id`, `default_coo`).
-- **packaging_rules**: pack variants per SKU (`pack_name`, dimensions, stack settings, defaults). Dimension uploads support cm (preferred for pallets/crates) and legacy m values.
+- **packaging_rules**: standard-pack profile per SKU (plus optional variants) with dimensions, stack settings, and defaults. Dimension uploads support cm (preferred for pallets/crates) and legacy m values.
 - **lead_times** / **lead_time_overrides**: baseline and SKU-level transit assumptions.
 - **equipment_presets**: mode/equipment dimensions and payload constraints.
 - **rates**: legacy/simple freight rates table used in planning flows.
@@ -14,7 +14,7 @@ Core entities used by planning workflows:
 
 ## Relationship highlights
 - A supplier can have many SKUs.
-- Each SKU can have many pack rules, with one default rule.
+- Each SKU has one default standard pack rule used for planning and kg-to-pack rounding.
 - Demand lines reference SKUs and can optionally use pack-rule overrides.
 - Rate cards and charges are evaluated with lane + scope + equipment matching.
 - Customs attributes are maintained as effective-dated records for reporting continuity.

@@ -247,7 +247,13 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             st.warning("No SKUs found. Create a SKU first.")
             st.stop()
 
-        render_about("Pack rules", "Maintain packaging rules per supplier-specific SKU.\n\nPrerequisites: SKU exists.\n\nSteps: 1) Pick SKU. 2) Add/edit pack rules. 3) Set one default. 4) Save.\n\nExample: CARTON_STD with 120 units_per_pack.")
+        render_about(
+            "Standard pack profile",
+            "Maintain one standard pack profile per supplier-specific SKU.\n\n"
+            "Prerequisites: SKU exists.\n\n"
+            "Steps: 1) Pick SKU. 2) Enter standard pack dimensions/weight. 3) Set stacking and conveyance allowances. 4) Save.\n\n"
+            "Notes: ordering rounds up to whole packs and always enforces at least 1 pack.",
+        )
         search = st.text_input("Search SKU (PN, supplier code/name, description)", key="pack_sku_search", help="Filter SKU list before selecting. Example: MAEU")
         if search:
             mask = (
@@ -356,93 +362,110 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             get_conn(),
             params=(selected_sku_id,),
         )
-        selector_options = pack_source["id"].tolist() if not pack_source.empty else []
-        selected_pack_id = st.selectbox("Selected pack rule", [None] + selector_options, key="selected_pack_rule", help="Pick a row id to duplicate/delete/set default.")
-
-        b1, b2, b3, b4 = st.columns(4)
-        if b1.button("Add pack rule"):
-            conn = get_conn()
+        if pack_source.empty:
             with conn:
                 conn.execute(
                     """
                     INSERT INTO packaging_rules(
                         sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
                         dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
-                    ) VALUES (?, 'NEW', 'STANDARD', 0, 1, 0, 0, 0.1, 0.1, 0.1, 1, 1, 1, NULL)
+                    ) VALUES (?, 'STANDARD_PACK', 'STANDARD', 1, 1, 1, 0, 0.1, 0.1, 0.1, 1, 1, 1, NULL)
                     """,
                     (selected_sku_id,),
                 )
+            st.info("Created a default standard pack profile for this SKU. Update fields below and save.")
             st.rerun()
-        if b2.button("Duplicate selected pack rule") and selected_pack_id:
-            conn = get_conn()
-            row = conn.execute("SELECT * FROM packaging_rules WHERE id = ?", (selected_pack_id,)).fetchone()
-            if row:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO packaging_rules(
-                            sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
-                            dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
-                        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            row["sku_id"],
-                            f"{row['pack_name']}_COPY",
-                            row["pack_type"],
-                            row["units_per_pack"], row["kg_per_unit"], row["pack_tare_kg"],
-                            row["dim_l_m"], row["dim_w_m"], row["dim_h_m"],
-                            row["min_order_packs"], row["increment_packs"], row["stackable"], row["max_stack"],
-                        ),
-                    )
-                st.rerun()
-        if b3.button("Set as default") and selected_pack_id:
-            conn = get_conn()
+
+        default_pack = pack_source.sort_values(["is_default", "id"], ascending=[False, True]).iloc[0]
+        if len(pack_source) > 1:
+            st.warning("Multiple pack rules exist for this SKU. The standard pack profile below uses the default row.")
+
+        standard_pack_kg = float(default_pack["units_per_pack"] or 0) * float(default_pack["kg_per_unit"] or 0) + float(default_pack["pack_tare_kg"] or 0)
+        with st.form("standard_pack_form"):
+            st.markdown("#### Standard pack profile")
+            f1, f2, f3, f4 = st.columns(4)
+            f1.text_input("SKU (part number)", value=str(selected_sku["part_number"]), disabled=True)
+            f2.text_input("Vendor", value=f"{selected_sku['supplier_code']} ({selected_sku['supplier_name']})", disabled=True)
+            dim_l_cm = f3.number_input("Length (cm)", min_value=0.01, value=float(default_pack["dim_l_cm"]), step=1.0)
+            dim_w_cm = f4.number_input("Width (cm)", min_value=0.01, value=float(default_pack["dim_w_cm"]), step=1.0)
+
+            g1, g2, g3, g4 = st.columns(4)
+            dim_h_cm = g1.number_input("Height (cm)", min_value=0.01, value=float(default_pack["dim_h_cm"]), step=1.0)
+            standard_pack_kg_input = g2.number_input("Standard pack weight (kg)", min_value=0.001, value=max(0.001, standard_pack_kg), step=0.5)
+            stackable = g3.checkbox("Stackable", value=bool(default_pack["stackable"]))
+            max_stack = g4.number_input("Max stack", min_value=1, value=int(default_pack["max_stack"] or 1), step=1, disabled=not stackable)
+
+            submitted = st.form_submit_button("Save standard pack profile")
+
+        if submitted:
             with conn:
-                conn.execute("UPDATE packaging_rules SET is_default = 0 WHERE sku_id = ?", (selected_sku_id,))
-                conn.execute("UPDATE packaging_rules SET is_default = 1 WHERE id = ?", (selected_pack_id,))
+                conn.execute("UPDATE packaging_rules SET is_default = 0 WHERE sku_id = ?", (int(selected_sku_id),))
+                conn.execute(
+                    """
+                    UPDATE packaging_rules
+                    SET
+                        pack_name = ?,
+                        pack_type = 'STANDARD',
+                        is_default = 1,
+                        units_per_pack = 1,
+                        kg_per_unit = ?,
+                        pack_tare_kg = 0,
+                        dim_l_m = ?,
+                        dim_w_m = ?,
+                        dim_h_m = ?,
+                        min_order_packs = 1,
+                        increment_packs = 1,
+                        stackable = ?,
+                        max_stack = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        f"STD_{selected_sku['part_number']}",
+                        float(standard_pack_kg_input),
+                        normalize_pack_dimension_to_meters(dim_l_cm),
+                        normalize_pack_dimension_to_meters(dim_w_cm),
+                        normalize_pack_dimension_to_meters(dim_h_cm),
+                        1 if stackable else 0,
+                        int(max_stack) if stackable else None,
+                        int(default_pack["id"]),
+                    ),
+                )
+            st.success("Standard pack profile saved")
             st.rerun()
-        delete_confirm = b4.checkbox("Confirm delete", key="confirm_pack_delete")
-        if b4.button("Delete pack rule") and selected_pack_id:
-            if delete_confirm:
-                conn = get_conn()
-                with conn:
-                    conn.execute("DELETE FROM packaging_rules WHERE id = ?", (selected_pack_id,))
-                st.rerun()
-            else:
-                st.warning("Check confirm delete first.")
 
-        render_field_guide("pack_rules")
-        edited = st.data_editor(
-            pack_source,
-            num_rows="dynamic",
-            width="stretch",
-            column_order=[
-                "id", "sku_id", "pack_name", "pack_type", "units_per_pack", "kg_per_unit", "pack_tare_kg",
-                "dim_l_cm", "dim_w_cm", "dim_h_cm", "min_order_packs", "increment_packs", "stackable", "max_stack", "is_default"
-            ],
-            disabled=["sku_id"],
-            key="pack_rules_editor",
-            column_config=table_column_config("pack_rules"),
-        )
+        with st.expander("Advanced pack rule editor (optional)", expanded=False):
+            render_field_guide("pack_rules")
+            edited = st.data_editor(
+                pack_source,
+                num_rows="dynamic",
+                width="stretch",
+                column_order=[
+                    "id", "sku_id", "pack_name", "pack_type", "units_per_pack", "kg_per_unit", "pack_tare_kg",
+                    "dim_l_cm", "dim_w_cm", "dim_h_cm", "min_order_packs", "increment_packs", "stackable", "max_stack", "is_default"
+                ],
+                disabled=["sku_id"],
+                key="pack_rules_editor",
+                column_config=table_column_config("pack_rules"),
+            )
 
-        if st.button("Save changes", key="save_pack"):
-            errors = validate_with_specs("pack_rules", edited)
-            if edited["is_default"].sum() > 1:
-                errors.append("Only one default pack rule is allowed per SKU")
-            if errors:
-                st.error("; ".join(errors))
-            else:
-                original_for_save = pack_source.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
-                edited_for_save = edited.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
-                for dim_col in ["dim_l_m", "dim_w_m", "dim_h_m"]:
-                    original_for_save[dim_col] = original_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
-                    edited_for_save[dim_col] = edited_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
-                ok, err = save_grid("packaging_rules", original_for_save, edited_for_save, ["id"])
-                if ok:
-                    st.success("Pack rules saved")
-                    st.rerun()
+            if st.button("Save advanced changes", key="save_pack"):
+                errors = validate_with_specs("pack_rules", edited)
+                if edited["is_default"].sum() > 1:
+                    errors.append("Only one default pack rule is allowed per SKU")
+                if errors:
+                    st.error("; ".join(errors))
                 else:
-                    st.error(f"Could not save pack rules: {err}")
+                    original_for_save = pack_source.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
+                    edited_for_save = edited.rename(columns={"dim_l_cm": "dim_l_m", "dim_w_cm": "dim_w_m", "dim_h_cm": "dim_h_m"})
+                    for dim_col in ["dim_l_m", "dim_w_m", "dim_h_m"]:
+                        original_for_save[dim_col] = original_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
+                        edited_for_save[dim_col] = edited_for_save[dim_col].apply(normalize_pack_dimension_to_meters)
+                    ok, err = save_grid("packaging_rules", original_for_save, edited_for_save, ["id"])
+                    if ok:
+                        st.success("Pack rules saved")
+                        st.rerun()
+                    else:
+                        st.error(f"Could not save pack rules: {err}")
 
     elif admin_screen == "Lead times":
         render_about("Lead times", """Define default lead times by COO/mode and SKU overrides.

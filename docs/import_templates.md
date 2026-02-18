@@ -60,3 +60,5 @@ AXLE-2200,SUP_B,2026-04-02,400,Sample,AIR
 - Model and upload data as **supplier-specific SKUs** (part number + supplier).
 - Create suppliers first, then SKUs, then pack rules tied to those SKUs.
 - Keep one default pack rule per supplier-specific SKU.
+- Recommended operating model: treat the default pack rule as the SKU's **standard pack profile** (SKU + vendor + L/W/H cm + standard pack kg + stackability + conveyance allowance in UI).
+- Planning rounds required kilograms up to whole standard packs and enforces at least 1 pack per order.
