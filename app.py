@@ -14,6 +14,7 @@ from constraints_engine import max_units_per_conveyance
 from fit_engine import equipment_count_for_packs
 
 from db import (
+    clear_all_saved_data,
     compute_grid_diff,
     delete_rows,
     export_data_bundle,
@@ -618,7 +619,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
         st.markdown("#### Bulk import standard-pack master data (SKU + vendor)")
         st.caption(
             "Use this file to manage pack master data in one place and map each row to a supplier-specific SKU via part_number + supplier_code. "
-            "For standard-pack modeling, this import fixes units_per_pack=1 and stores your pack weight in pack_kg while converting dimensions from millimeters to meters."
+            "For standard-pack modeling, this import fixes units_per_pack=1 and stores your pack weight in pack_kg (always kilograms per pack) while converting dimensions from millimeters to meters. Demand/raw quantity remains in the SKU UOM (KG/METER/EA/etc.)."
         )
         pack_mdm_template = Path("templates") / "pack_mdm_template.csv"
         if pack_mdm_template.exists():
@@ -632,7 +633,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             "Upload pack master data csv",
             type=["csv"],
             key="pack_mdm_upload",
-            help="Columns: part_number, supplier_code, pack_kg, length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, plus optional pack metadata.",
+            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
         )
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -1136,6 +1137,7 @@ Example: CN + OCEAN = 35 days.""")
 
         st.divider()
         st.subheader("Cleanup tools")
+        st.caption("These actions permanently delete data. Export a full bundle first if you may need recovery.")
         cutoff = st.date_input("Delete demand history before", value=date.today(), key="purge_cutoff", help="Deletes demand/tranche rows older than this YYYY-MM-DD date.")
         if st.button("Purge historical demand", key="purge_demand"):
             deleted = purge_demand_before(cutoff.isoformat())
@@ -1143,6 +1145,25 @@ Example: CN + OCEAN = 35 days.""")
                 "Deleted rows: "
                 f"demand_lines={deleted['demand_lines']}, tranche_allocations={deleted['tranche_allocations']}"
             )
+
+        st.markdown("##### Clear all saved data")
+        st.warning("This removes all saved rows across demand and master data tables (SKUs, pack rules, suppliers, rates, lanes, customs, etc.).")
+        confirm_clear_all = st.checkbox(
+            "I understand this will delete all saved data and cannot be undone",
+            key="confirm_clear_all_data",
+        )
+        if st.button("Clear ALL saved data", key="clear_all_data", type="primary", disabled=not confirm_clear_all):
+            deleted = clear_all_saved_data()
+            deleted_nonzero = {k: v for k, v in deleted.items() if v}
+            if deleted_nonzero:
+                st.success(
+                    "Cleared saved data rows: "
+                    + ", ".join([f"{table}={count}" for table, count in sorted(deleted_nonzero.items())])
+                )
+            else:
+                st.info("No saved rows found to clear.")
+            st.rerun()
+
         if st.button("Compact database (VACUUM)", key="vacuum_db"):
             vacuum_db()
             st.success("Database compacted")
