@@ -26,7 +26,7 @@ from db import (
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
-from seed import ensure_templates, seed_if_empty
+from seed import TEMPLATE_SPECS, ensure_templates, seed_if_empty
 from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
 from validators import require_cols, validate_dates, validate_positive, validate_with_specs
 
@@ -676,6 +676,9 @@ Example: CN + OCEAN = 35 days.""")
         """, get_conn())
         render_field_guide("demand")
         edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("demand"), disabled=["part_number", "supplier_code", "sku_label"])
+        demand_template = Path("templates") / "demand_template.csv"
+        if demand_template.exists():
+            st.download_button("Download demand_template.csv", data=demand_template.read_bytes(), file_name="demand_template.csv", mime="text/csv")
         st.caption("Optional CSV import")
         upload = st.file_uploader("Upload demand csv", type=["csv"], help="CSV with part_number, supplier_code(optional), need_date YYYY-MM-DD, qty, optional phase/mode_override/service_scope/miles.")
         if upload is not None:
@@ -1065,10 +1068,10 @@ elif section == "Docs":
     elif doc_page == "Import Templates":
         render_docs_page("import_templates.md")
         st.subheader("Download CSV templates")
-        for table_key, fname in [("suppliers", "suppliers_template.csv"), ("skus", "skus_template.csv"), ("pack_rules", "pack_rules_template.csv"), ("lead_times", "lead_times_template.csv"), ("demand", "demand_template.csv"), ("rate_cards", "rate_cards_template.csv"), ("rate_charges", "rate_charges_template.csv"), ("customs_hts", "customs_hts_template.csv")]:
-            cols = list(TABLE_SPECS[table_key].keys())
-            sample = {c: TABLE_SPECS[table_key][c].example for c in cols}
-            csv_blob = pd.DataFrame([sample], columns=cols).to_csv(index=False).encode()
+        templates_dir = Path("templates")
+        for _, fname in TEMPLATE_SPECS:
+            template_path = templates_dir / fname
+            csv_blob = template_path.read_bytes()
             st.download_button(f"Download {fname}", data=csv_blob, file_name=fname, mime="text/csv")
     else:
         render_docs_page("faq.md")
