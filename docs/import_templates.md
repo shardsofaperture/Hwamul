@@ -29,7 +29,7 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | --- | --- | --- |
 | `part_number` | Yes | SKU part number from `sku_master`. |
 | `supplier_code` | Yes | Supplier code to tie the row to a supplier-specific SKU. |
-| `pack_kg` | Yes | Numeric `>= 0.001`; gross weight per pack (kg). |
+| `pack_kg` | Yes | Numeric `>= 0.001`; gross weight per pack in kilograms (always kg, regardless of SKU UOM). |
 | `length_mm` | Yes | Numeric `>= 1`; pack length in millimeters. |
 | `width_mm` | Yes | Numeric `>= 1`; pack width in millimeters. |
 | `height_mm` | Yes | Numeric `>= 1`; pack height in millimeters. |
@@ -42,6 +42,10 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | `allowed_modes` | Yes | Pipe-delimited mode codes (e.g., `OCEAN|TRUCK|AIR`). |
 | `incoterm` | Yes | One of: `EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`. |
 | `incoterm_named_place` | Yes | Named place associated with the incoterm. |
+
+Notes:
+- `raw_qty`/demand quantity is interpreted in the SKU's `uom` (KG, METER, EA, etc.); this is a generic UOM field.
+- `pack_kg` is always **kilograms per pack** and is separate from the SKU UOM.
 
 ## Raw BOM import (`raw_bom_template.csv`)
 Use this upload when planners only have part-level required quantity and need pack conversion in-app.

@@ -4,6 +4,7 @@ import pandas as pd
 
 import db
 from db import (
+    clear_all_saved_data,
     compute_grid_diff,
     delete_rows,
     export_data_bundle,
@@ -611,3 +612,46 @@ def test_migration_v13_adds_sku_logistics_profile_fields(tmp_path):
     assert "source_location" in sku_cols
     assert "incoterm" in sku_cols
     assert "uom" in sku_cols
+
+
+def test_clear_all_saved_data_removes_master_and_demand_rows(tmp_path):
+    db.DB_PATH = tmp_path / "planner.db"
+    run_migrations()
+    conn = db.get_conn()
+
+    with conn:
+        conn.execute("INSERT INTO suppliers(supplier_code, supplier_name) VALUES ('CL1', 'Clear Supplier')")
+        supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code='CL1'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES ('CL-PN', ?, 'Clear Part', 'US')",
+            (supplier_id,),
+        )
+        sku_id = conn.execute(
+            "SELECT sku_id FROM sku_master WHERE part_number='CL-PN' AND supplier_id=?",
+            (supplier_id,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO packaging_rules(
+                sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
+                dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
+            ) VALUES (?, 'STD_CL-PN', 'STANDARD', 1, 1, 10.0, 0.0, 1.2, 0.8, 0.9, 1, 1, 1, 3)
+            """,
+            (sku_id,),
+        )
+        conn.execute(
+            "INSERT INTO demand_lines(sku_id, need_date, qty, notes) VALUES (?, '2026-01-01', 5, 'clear me')",
+            (sku_id,),
+        )
+
+    deleted = clear_all_saved_data()
+
+    assert deleted["suppliers"] == 1
+    assert deleted["sku_master"] == 1
+    assert deleted["packaging_rules"] == 1
+    assert deleted["demand_lines"] == 1
+
+    assert conn.execute("SELECT COUNT(*) FROM suppliers").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM sku_master").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM packaging_rules").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM demand_lines").fetchone()[0] == 0

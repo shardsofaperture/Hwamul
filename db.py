@@ -1670,6 +1670,34 @@ def purge_demand_before(cutoff_date: str) -> dict[str, int]:
     return {"demand_lines": deleted_demand, "tranche_allocations": deleted_allocs}
 
 
+def clear_all_saved_data() -> dict[str, int]:
+    """Delete all user-managed table rows while preserving schema/migrations."""
+    conn = get_conn()
+    managed_tables = [
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+              AND name <> 'schema_migrations'
+            ORDER BY name
+            """
+        ).fetchall()
+    ]
+
+    deleted_counts: dict[str, int] = {}
+    with conn:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        for table_name in managed_tables:
+            deleted_counts[table_name] = conn.execute(f"DELETE FROM {table_name}").rowcount
+        conn.execute("DELETE FROM sqlite_sequence")
+        conn.execute("PRAGMA foreign_keys=ON")
+
+    return deleted_counts
+
+
 def vacuum_db() -> None:
     conn = get_conn()
     conn.execute("VACUUM")
