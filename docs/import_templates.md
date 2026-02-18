@@ -42,6 +42,7 @@ Use this when you want a canonical standard-pack contract mapped by SKU + suppli
 | `allowed_modes` | Yes | Pipe-delimited mode codes (e.g., `OCEAN|TRUCK|AIR`). |
 | `incoterm` | Yes | One of: `EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`. |
 | `incoterm_named_place` | Yes | Named place associated with the incoterm. |
+| `hts_code` | No | Optional default HTS code captured on SKU master (format like `7208.39.0015`). |
 
 Notes:
 - `raw_qty`/demand quantity is interpreted in the SKU's `uom` (KG, METER, EA, etc.); this is a generic UOM field.
