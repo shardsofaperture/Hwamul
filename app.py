@@ -32,6 +32,7 @@ from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
 from services.master_data_import import (
+    _normalize_import,
     apply_pack_master_import,
     validate_pack_master_import,
 )
@@ -258,7 +259,8 @@ def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str, dic
             + ", ".join(required_pack_cols)
         ), report_payload
 
-    import_errors = validate_with_specs("pack_rules_import", import_frame)
+    normalized_for_specs = _normalize_import(import_frame)
+    import_errors = validate_with_specs("pack_rules_import", normalized_for_specs)
     if import_errors:
         report_payload["errors"].extend(
             {
