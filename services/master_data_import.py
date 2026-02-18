@@ -6,6 +6,8 @@ import sqlite3
 
 import pandas as pd
 
+from db import normalize_delimited_tokens, replace_sku_token_set
+
 
 @dataclass(frozen=True)
 class PackMasterImportResult:
@@ -54,10 +56,7 @@ STRICT_PORT_CODE_REGEX = re.compile(r"^[A-Z]{5}$")
 
 
 def _split_pipe_list(raw_value: object) -> list[str]:
-    if pd.isna(raw_value):
-        return []
-    tokens = [str(v).strip().upper() for v in str(raw_value).split("|")]
-    return sorted({tok for tok in tokens if tok})
+    return normalize_delimited_tokens(raw_value, delimiter="|")
 
 
 def _to_bool_int(raw_value: object) -> int:
@@ -378,21 +377,21 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
             )
             pack_rules_upserted += 1
 
-            conn.execute("DELETE FROM sku_ship_to_locations WHERE sku_id = ?", (sku_id,))
-            for dest in row.ship_to_values:
-                conn.execute(
-                    "INSERT INTO sku_ship_to_locations(sku_id, destination_code) VALUES (?, ?)",
-                    (sku_id, dest),
-                )
-                ship_to_replaced += 1
+            ship_to_replaced += replace_sku_token_set(
+                conn,
+                table_name="sku_ship_to_locations",
+                sku_id=sku_id,
+                column_name="destination_code",
+                values=list(row.ship_to_values),
+            )
 
-            conn.execute("DELETE FROM sku_allowed_modes WHERE sku_id = ?", (sku_id,))
-            for mode in row.mode_values:
-                conn.execute(
-                    "INSERT INTO sku_allowed_modes(sku_id, mode_code) VALUES (?, ?)",
-                    (sku_id, mode),
-                )
-                modes_replaced += 1
+            modes_replaced += replace_sku_token_set(
+                conn,
+                table_name="sku_allowed_modes",
+                sku_id=sku_id,
+                column_name="mode_code",
+                values=list(row.mode_values),
+            )
 
             conn.execute(
                 "UPDATE sku_master SET incoterm = ?, incoterm_named_place = ? WHERE sku_id = ?",

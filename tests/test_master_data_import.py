@@ -144,3 +144,39 @@ def test_apply_pack_master_upload_returns_validation_payload(tmp_path: Path, mon
     assert "failed validation" in msg
     assert "errors" in payload
     assert payload["summary"]["failed"] == 1
+
+
+def test_normalize_delimited_tokens_dedupes_and_normalizes(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+
+    out = db.normalize_delimited_tokens("  ocean |TRUCK|ocean|| air ")
+
+    assert out == ["AIR", "OCEAN", "TRUCK"]
+
+
+def test_replace_sku_token_set_replaces_existing_rows(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+    db.run_migrations()
+    conn = db.get_conn()
+    conn.execute("INSERT INTO suppliers(supplier_code, supplier_name) VALUES (?, ?)", ("TST", "Test Supplier"))
+    supplier_id = conn.execute("SELECT supplier_id FROM suppliers WHERE supplier_code = ?", ("TST",)).fetchone()["supplier_id"]
+    conn.execute("INSERT INTO sku_master(part_number, supplier_id, description, default_coo) VALUES (?, ?, ?, ?)", ("PN_REPLACE", supplier_id, "desc", "CN"))
+
+    sku_id = conn.execute("SELECT sku_id FROM sku_master WHERE part_number = ?", ("PN_REPLACE",)).fetchone()["sku_id"]
+    conn.execute("INSERT INTO sku_ship_to_locations(sku_id, destination_code) VALUES (?, ?)", (sku_id, "OLD_DC"))
+
+    inserted = db.replace_sku_token_set(
+        conn,
+        table_name="sku_ship_to_locations",
+        sku_id=int(sku_id),
+        column_name="destination_code",
+        values=["USLAX_DC01", "USLGB_DC02"],
+    )
+
+    rows = conn.execute(
+        "SELECT destination_code FROM sku_ship_to_locations WHERE sku_id = ? ORDER BY destination_code",
+        (sku_id,),
+    ).fetchall()
+
+    assert inserted == 2
+    assert [r["destination_code"] for r in rows] == ["USLAX_DC01", "USLGB_DC02"]

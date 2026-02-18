@@ -15,6 +15,7 @@ from fit_engine import (
     utilization,
 )
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
+from db import get_sku_routing_context
 
 
 def norm_mode(mode: str | None) -> str:
@@ -88,6 +89,11 @@ def plan_quick_run(
 
     coo = (coo_override or sku_row["default_coo"] or "").strip().upper()
 
+    routing_context = get_sku_routing_context(conn, sku_id)
+    allowed_modes = {norm_mode(m) for m in routing_context.get("allowed_modes", []) if norm_mode(m)}
+    ship_to_candidates = [str(v).strip().upper() for v in routing_context.get("ship_to_locations", []) if str(v).strip()]
+    ship_from_origin = (routing_context.get("ship_from_origin_code") or "").strip().upper()
+
     if pack_rule_id:
         pack_rule_row = conn.execute(
             "SELECT * FROM packaging_rules WHERE id = ? AND sku_id = ?",
@@ -118,6 +124,8 @@ def plan_quick_run(
     shipped_volume = packs_required * pack_volume
 
     requested_modes = {norm_mode(m) for m in (modes or []) if norm_mode(m)}
+    if allowed_modes:
+        requested_modes = requested_modes & allowed_modes if requested_modes else set(allowed_modes)
     eq_rows = conn.execute("SELECT * FROM equipment_presets WHERE active = 1 ORDER BY mode, equipment_code").fetchall()
     try:
         restriction_rows = conn.execute(
@@ -164,6 +172,16 @@ def plan_quick_run(
     for eq_row in eq_rows:
         eq = dict(eq_row)
         mode = norm_mode(eq.get("mode"))
+        if allowed_modes and mode not in allowed_modes:
+            excluded_equipment.append(
+                {
+                    "mode": mode,
+                    "equipment_name": eq.get("name"),
+                    "equipment_code": eq.get("equipment_code"),
+                    "reason": "Disallowed by SKU allowed_modes",
+                }
+            )
+            continue
         if requested_modes and mode not in requested_modes:
             continue
 
@@ -220,16 +238,18 @@ def plan_quick_run(
         est_cost = None
         carrier_best = None
 
-        if lane_origin_code and lane_dest_code and cards:
+        effective_origin = (lane_origin_code or ship_from_origin or "").strip().upper()
+        effective_dest = (lane_dest_code or (ship_to_candidates[0] if ship_to_candidates else "")).strip().upper()
+        if effective_origin and effective_dest and cards:
             shipment = RateTestInput(
                 ship_date=need_dt,
                 mode=mode,
                 equipment=norm_equipment_code(eq.get("equipment_code") or eq.get("name") or ""),
                 service_scope=(service_scope or "P2P").upper(),
                 origin_type="CITY",
-                origin_code=lane_origin_code.upper(),
+                origin_code=effective_origin,
                 dest_type="CITY",
-                dest_code=lane_dest_code.upper(),
+                dest_code=effective_dest,
                 containers_count=float(equipment_count),
                 weight_kg=shipped_weight,
                 volume_m3=shipped_volume,
@@ -358,4 +378,13 @@ def plan_quick_run(
         "rate_breakdown": rate_breakdown,
         "excluded_equipment": sorted(excluded_equipment, key=lambda r: (r["mode"], r.get("equipment_code") or "", r["equipment_name"] or "")),
         "warnings": [w for w in [truck_warning] if w],
+        "routing_context": {
+            "ship_from_origin_code": ship_from_origin or None,
+            "destination_candidates": ship_to_candidates,
+            "allowed_modes": sorted(list(allowed_modes)) if allowed_modes else [],
+            "incoterm": routing_context.get("incoterm"),
+            "incoterm_named_place": routing_context.get("incoterm_named_place"),
+            "selected_origin_code": (lane_origin_code or ship_from_origin or None),
+            "selected_dest_code": (lane_dest_code or (ship_to_candidates[0] if ship_to_candidates else None)),
+        },
     }
