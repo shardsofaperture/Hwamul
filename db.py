@@ -1340,6 +1340,21 @@ def _migration_18_sku_routing_and_location_dimensions(conn: sqlite3.Connection) 
 MIGRATIONS.append((18, _migration_18_sku_routing_and_location_dimensions))
 
 
+def _migration_19_sku_hts_code(conn: sqlite3.Connection) -> None:
+    sku_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sku_master'"
+    ).fetchone()
+    if not sku_exists:
+        return
+
+    sku_cols = {row[1] for row in conn.execute("PRAGMA table_info(sku_master)").fetchall()}
+    if "hts_code" not in sku_cols:
+        conn.execute("ALTER TABLE sku_master ADD COLUMN hts_code TEXT")
+
+
+MIGRATIONS.append((19, _migration_19_sku_hts_code))
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1696,6 +1711,80 @@ def clear_all_saved_data() -> dict[str, int]:
         conn.execute("PRAGMA foreign_keys=ON")
 
     return deleted_counts
+
+
+def delete_sku_with_dependencies(sku_id: int) -> dict[str, int]:
+    """Delete one SKU and all dependent rows that reference it."""
+    conn = get_conn()
+    deleted: dict[str, int] = {}
+    with conn:
+        deleted["tranche_allocations"] = conn.execute(
+            "DELETE FROM tranche_allocations WHERE demand_line_id IN (SELECT id FROM demand_lines WHERE sku_id = ?)",
+            (sku_id,),
+        ).rowcount
+        for table_name in [
+            "demand_lines",
+            "packaging_rules",
+            "lead_time_overrides",
+            "customs_hts_rates",
+            "sku_equipment_rules",
+            "sku_ship_to_locations",
+            "sku_allowed_modes",
+            "bom_lines",
+            "pack_plan_lines",
+            "schedule_summary",
+            "truck_plan_truck_items",
+        ]:
+            try:
+                deleted[table_name] = conn.execute(
+                    f"DELETE FROM {table_name} WHERE sku_id = ?",
+                    (sku_id,),
+                ).rowcount
+            except sqlite3.OperationalError:
+                continue
+        deleted["sku_master"] = conn.execute(
+            "DELETE FROM sku_master WHERE sku_id = ?",
+            (sku_id,),
+        ).rowcount
+
+        deleted["ship_from_locations"] = conn.execute(
+            """
+            DELETE FROM ship_from_locations
+            WHERE ship_from_location_id IN (
+                SELECT sfl.ship_from_location_id
+                FROM ship_from_locations sfl
+                LEFT JOIN sku_master sm
+                  ON sm.ship_from_location_id = sfl.ship_from_location_id
+                WHERE sm.ship_from_location_id IS NULL
+            )
+            """
+        ).rowcount
+    return deleted
+
+
+def delete_supplier_with_dependencies(supplier_id: int) -> dict[str, int]:
+    """Delete a supplier and all dependent SKU-linked records."""
+    conn = get_conn()
+    sku_ids = [
+        int(row[0])
+        for row in conn.execute(
+            "SELECT sku_id FROM sku_master WHERE supplier_id = ?",
+            (supplier_id,),
+        ).fetchall()
+    ]
+
+    deleted: dict[str, int] = {}
+    for sku_id in sku_ids:
+        per_sku = delete_sku_with_dependencies(sku_id)
+        for table_name, count in per_sku.items():
+            deleted[table_name] = deleted.get(table_name, 0) + int(count)
+
+    with conn:
+        deleted["suppliers"] = conn.execute(
+            "DELETE FROM suppliers WHERE supplier_id = ?",
+            (supplier_id,),
+        ).rowcount
+    return deleted
 
 
 def vacuum_db() -> None:

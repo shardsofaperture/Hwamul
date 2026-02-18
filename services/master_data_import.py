@@ -92,6 +92,10 @@ def _normalize_import(import_df: pd.DataFrame) -> pd.DataFrame:
     data["part_number"] = data["part_number"].apply(_normalize_code_text)
     data["supplier_code"] = data["supplier_code"].apply(_normalize_code_text)
     data["incoterm"] = data["incoterm"].astype(str).str.strip().str.upper()
+    if "hts_code" in data.columns:
+        data["hts_code"] = data["hts_code"].astype(str).str.strip()
+    else:
+        data["hts_code"] = ""
     data["incoterm_named_place"] = data["incoterm_named_place"].astype(str).str.strip()
     data["ship_from_city"] = data["ship_from_city"].astype(str).str.strip().str.upper()
     data["ship_from_port_code"] = data["ship_from_port_code"].astype(str).str.strip().str.upper()
@@ -310,8 +314,8 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
             supplier_id = supplier_map[row.supplier_code]
             conn.execute(
                 """
-                INSERT INTO sku_master(part_number, supplier_id, plant_code, supplier_duns, description, source_location, incoterm, incoterm_named_place, uom, default_coo, ship_from_location_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sku_master(part_number, supplier_id, plant_code, supplier_duns, description, source_location, incoterm, incoterm_named_place, hts_code, uom, default_coo, ship_from_location_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(part_number, supplier_id) DO UPDATE SET
                     plant_code = excluded.plant_code,
                     supplier_duns = excluded.supplier_duns,
@@ -319,6 +323,7 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
                     source_location = excluded.source_location,
                     incoterm = excluded.incoterm,
                     incoterm_named_place = excluded.incoterm_named_place,
+                    hts_code = excluded.hts_code,
                     uom = excluded.uom,
                     default_coo = excluded.default_coo,
                     ship_from_location_id = excluded.ship_from_location_id
@@ -332,6 +337,7 @@ def apply_pack_master_import(conn: sqlite3.Connection, import_df: pd.DataFrame) 
                     row.ship_from_location_code,
                     row.incoterm,
                     row.incoterm_named_place,
+                    str(getattr(row, "hts_code", "") or "").strip(),
                     str(getattr(row, "uom", "EA") or "EA").strip().upper(),
                     str(getattr(row, "default_coo", "UN") or "UN").strip().upper(),
                     ship_from_location_id,

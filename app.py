@@ -17,6 +17,8 @@ from db import (
     clear_all_saved_data,
     compute_grid_diff,
     delete_rows,
+    delete_sku_with_dependencies,
+    delete_supplier_with_dependencies,
     export_data_bundle,
     get_conn,
     import_data_bundle,
@@ -68,6 +70,7 @@ def read_sku_catalog() -> pd.DataFrame:
             sm.description,
             sm.source_location,
             sm.incoterm,
+            sm.hts_code,
             sm.uom,
             sm.default_coo,
             sm.part_number || ' [' || s.supplier_code || ' @ ' || sm.plant_code || ']' AS sku_label
@@ -398,6 +401,34 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
                 else:
                     st.error(f"Could not save suppliers: {err}")
 
+        st.markdown("##### Delete supplier (with dependent SKUs, packs, demand, and related rows)")
+        supplier_choices = source[["supplier_id", "supplier_code", "supplier_name"]].copy() if not source.empty else pd.DataFrame()
+        if supplier_choices.empty:
+            st.caption("No suppliers available to delete.")
+        else:
+            supplier_delete_id = st.selectbox(
+                "Supplier to delete",
+                options=supplier_choices["supplier_id"].astype(int).tolist(),
+                format_func=lambda sid: supplier_choices.loc[supplier_choices["supplier_id"] == sid, "supplier_code"].iloc[0]
+                + " (" + supplier_choices.loc[supplier_choices["supplier_id"] == sid, "supplier_name"].iloc[0] + ")",
+                key="delete_supplier_id",
+            )
+            confirm_supplier_delete = st.checkbox(
+                "I understand this deletes the supplier and all linked SKUs/master-demand rows",
+                key="confirm_delete_supplier_with_dependencies",
+            )
+            if st.button("Delete supplier + dependencies", key="delete_supplier_with_dependencies", disabled=not confirm_supplier_delete):
+                deleted = delete_supplier_with_dependencies(int(supplier_delete_id))
+                deleted_nonzero = {k: v for k, v in deleted.items() if v}
+                if deleted_nonzero:
+                    st.success(
+                        "Deleted rows: "
+                        + ", ".join([f"{table}={count}" for table, count in sorted(deleted_nonzero.items())])
+                    )
+                else:
+                    st.info("No rows deleted for selected supplier.")
+                st.rerun()
+
     elif admin_screen == "SKUs":
         source = read_sku_catalog()
         q = st.text_input("Search SKU or description", help="Filter rows by part number, supplier code/name, or description. Example: PN_10001")
@@ -424,6 +455,32 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
                     st.rerun()
                 else:
                     st.error(f"Could not save SKUs: {err}. If changing existing SKU codes, update dependent pack and demand rows first.")
+
+        st.markdown("##### Delete SKU (with dependent pack/demand rows)")
+        if source.empty:
+            st.caption("No SKUs available to delete.")
+        else:
+            sku_delete_id = st.selectbox(
+                "SKU to delete",
+                options=source["sku_id"].astype(int).tolist(),
+                format_func=lambda sid: source.loc[source["sku_id"] == sid, "sku_label"].iloc[0],
+                key="delete_sku_id",
+            )
+            confirm_sku_delete = st.checkbox(
+                "I understand this deletes the SKU and all linked rows (packs, demand, customs, routing, BOM)",
+                key="confirm_delete_sku_with_dependencies",
+            )
+            if st.button("Delete SKU + dependencies", key="delete_sku_with_dependencies", disabled=not confirm_sku_delete):
+                deleted = delete_sku_with_dependencies(int(sku_delete_id))
+                deleted_nonzero = {k: v for k, v in deleted.items() if v}
+                if deleted_nonzero:
+                    st.success(
+                        "Deleted rows: "
+                        + ", ".join([f"{table}={count}" for table, count in sorted(deleted_nonzero.items())])
+                    )
+                else:
+                    st.info("No rows deleted for selected SKU.")
+                st.rerun()
 
     elif admin_screen == "Pack rules":
         sku_catalog = read_sku_catalog()
@@ -635,7 +692,7 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             "Upload pack master data csv",
             type=["csv"],
             key="pack_mdm_upload",
-            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
+            help="Columns: part_number, supplier_code, pack_kg (kg per pack), length_mm, width_mm, height_mm, is_stackable, ship_from_city, ship_from_port_code, ship_from_duns, ship_from_location_code, ship_to_locations, allowed_modes, incoterm, incoterm_named_place, optional hts_code, plus optional pack metadata. Quantity planning uses SKU UOM (KG/METER/EA/etc.).",
         )
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)

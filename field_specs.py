@@ -74,6 +74,7 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "allowed_modes": FieldSpec("text", required=True, max_length=120, regex=r"^[A-Z]+(\|[A-Z]+)*$", allowed_chars="A-Z and |", description="Pipe-delimited transport modes", example="OCEAN|TRUCK", notes="Use canonical values such as TRUCK, OCEAN, AIR."),
         "incoterm": FieldSpec("text", required=True, max_length=3, regex=r"^[A-Z]{3}$", allowed_chars="A-Z", choices=["EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "FOB", "CFR", "CIF"], description="Incoterm (ICC 2020)", example="FOB"),
         "incoterm_named_place": FieldSpec("text", required=True, max_length=120, description="Named place associated with the incoterm", example="SHANGHAI PORT"),
+        "hts_code": FieldSpec("text", max_length=20, regex=r"^[0-9.]{4,20}$", allowed_chars="0-9, .", description="Optional HTS code default for this supplier-specific SKU", example="7208.39.0015"),
         "pack_name": FieldSpec("text", max_length=64, regex=r"^[A-Z0-9_.-]{2,64}$", allowed_chars="A-Z, 0-9, ., _, -", description="Optional display label for pack profile", example="STD_MFG-88421", notes="Display-only alias. Leave blank to auto-generate STD_<part_number>."),
         "pack_type": FieldSpec("text", max_length=32, description="Optional packaging type", example="PALLET"),
         "qty_per_pack": FieldSpec("decimal", min_value=0.001, description="Optional quantity per pack", example="120"),
