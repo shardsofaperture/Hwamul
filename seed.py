@@ -10,15 +10,15 @@ from field_specs import TABLE_SPECS
 
 
 TEMPLATE_SPECS: list[tuple[str, str]] = [
-    ("suppliers", "suppliers_template.csv"),
-    ("skus", "skus_template.csv"),
-    ("pack_rules", "pack_rules_template.csv"),
-    ("pack_rules_import", "pack_mdm_template.csv"),  # canonical pack import schema from TABLE_SPECS
-    ("lead_times", "lead_times_template.csv"),
+    ("pack_rules_import", "pack_mdm_template.csv"),
+    ("raw_bom_import", "raw_bom_template.csv"),
     ("demand_import", "demand_template.csv"),
+    ("carrier", "carrier_template.csv"),
     ("rate_cards", "rate_cards_template.csv"),
     ("rate_charges", "rate_charges_template.csv"),
+    ("lanes", "lanes_template.csv"),
     ("customs_hts", "customs_hts_template.csv"),
+    ("lead_times", "lead_times_template.csv"),
 ]
 
 
@@ -105,6 +105,3 @@ def ensure_templates() -> None:
         writer.writerow(sample_row)
         (template_dir / fname).write_text(buffer.getvalue(), encoding="utf-8")
 
-    (template_dir / "bom_template.csv").write_text(
-        "part_number,supplier_code,need_date,qty\nINT-100045,DEFAULT,2026-03-17,96\n"
-    )

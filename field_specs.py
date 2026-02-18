@@ -112,6 +112,17 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "service_scope": FieldSpec("text", max_length=8, choices=["P2P", "P2D", "D2P", "D2D"], description="Service scope override", example="D2D"),
         "miles": FieldSpec("decimal", min_value=0, description="Optional trucking miles override", example="320"),
     },
+    "raw_bom_import": {
+        "part_number": FieldSpec("text", required=True, max_length=64, regex=r"^[A-Z0-9_.-]{2,64}$", allowed_chars="A-Z, 0-9, ., _, -", description="Part number from SKU master", example="MFG-88421"),
+        "supplier_code": FieldSpec("text", max_length=32, regex=r"^[A-Z0-9_-]{2,32}$", allowed_chars="A-Z, 0-9, _, -", description="Optional supplier code for disambiguation", example="DEFAULT"),
+        "need_date": FieldSpec("date", fmt="YYYY-MM-DD", description="Optional required date, defaults to today when omitted", example="2026-03-10"),
+        "raw_qty": FieldSpec("decimal", required=True, min_value=0.001, description="Requested raw quantity before pack rounding", example="250"),
+        "phase": FieldSpec("text", max_length=32, choices=["Trial1", "Trial2", "Sample", "Speed-up", "Validation", "SOP"], description="Production phase", example="Sample"),
+        "mode_override": FieldSpec("text", max_length=24, description="Optional mode override", example="OCEAN"),
+        "service_scope": FieldSpec("text", max_length=8, choices=["P2P", "P2D", "D2P", "D2D"], description="Service scope override", example="P2D"),
+        "miles": FieldSpec("decimal", min_value=0, description="Optional trucking miles override", example="320"),
+        "notes": FieldSpec("text", max_length=200, description="Optional notes", example="Round to full standard packs"),
+    },
     "equipment": {
         "equipment_code": FieldSpec("text", required=True, max_length=40, regex=r"^[A-Z0-9_]{3,40}$", allowed_chars="A-Z, 0-9, _", description="Canonical equipment code", example="CNT_40_DRY_HC"),
         "name": FieldSpec("text", required=True, max_length=80, description="Preset display name", example="40' Dry (High Cube)"),
@@ -169,6 +180,17 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "amount": FieldSpec("decimal", required=True, min_value=0, description="Charge amount", example="350"),
         "effective_from": FieldSpec("date", fmt="YYYY-MM-DD", description="Charge start", example="2026-01-01"),
         "effective_to": FieldSpec("date", fmt="YYYY-MM-DD", description="Charge end", example="2026-03-31"),
+    },
+    "carrier": {
+        "code": FieldSpec("text", required=True, max_length=32, regex=r"^[A-Z0-9_-]{2,32}$", allowed_chars="A-Z, 0-9, _, -", description="Carrier code", example="MAEU"),
+        "name": FieldSpec("text", required=True, max_length=120, description="Carrier name", example="Maersk"),
+        "is_active": FieldSpec("bool", required=True, description="Active flag", example="1"),
+    },
+    "lanes": {
+        "origin_code": FieldSpec("text", required=True, max_length=40, regex=r"^[A-Z0-9_.-]{2,40}$", allowed_chars="A-Z, 0-9, ., _, -", description="Origin code", example="CNSHA"),
+        "dest_code": FieldSpec("text", required=True, max_length=40, regex=r"^[A-Z0-9_.-]{2,40}$", allowed_chars="A-Z, 0-9, ., _, -", description="Destination code", example="USLAX"),
+        "default_service_scope": FieldSpec("text", max_length=8, choices=["P2P", "P2D", "D2P", "D2D"], description="Default service scope for demand fallback", example="P2D"),
+        "default_miles": FieldSpec("decimal", min_value=0, description="Optional lane miles", example="125"),
     },
 }
 

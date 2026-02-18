@@ -152,15 +152,6 @@ def render_template_downloads(prefix: str = "tpl") -> None:
                 mime="text/csv",
                 key=f"{prefix}_{fname}",
             )
-    bom_template = templates_dir / "bom_template.csv"
-    if bom_template.exists():
-        st.download_button(
-            "Download bom_template.csv",
-            data=bom_template.read_bytes(),
-            file_name="bom_template.csv",
-            mime="text/csv",
-            key=f"{prefix}_bom_template",
-        )
 
 
 def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_supplier_map") -> tuple[bool, str]:
@@ -201,6 +192,54 @@ def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_
     with conn:
         to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
     return True, f"Imported {len(to_insert)} demand rows"
+
+
+def apply_raw_bom_import(import_frame: pd.DataFrame, supplier_key: str = "raw_bom_supplier_map") -> tuple[bool, str]:
+    required_cols = [name for name, spec in TABLE_SPECS["raw_bom_import"].items() if spec.required]
+    missing_required = [col for col in required_cols if col not in import_frame.columns]
+    if missing_required:
+        return False, "Raw BOM import is missing required columns: " + ", ".join(missing_required)
+
+    import_errors = validate_with_specs("raw_bom_import", import_frame)
+    if "need_date" in import_frame.columns:
+        import_errors += validate_dates(import_frame, ["need_date"])
+    if import_errors:
+        return False, "; ".join(import_errors)
+
+    mapped = import_frame.rename(columns={"raw_qty": "qty"}).copy()
+    if "need_date" not in mapped.columns:
+        mapped["need_date"] = date.today().isoformat()
+    mapped["need_date"] = mapped["need_date"].fillna(date.today().isoformat()).astype(str)
+    ok, msg = apply_demand_import(mapped, supplier_key=supplier_key)
+    if not ok:
+        return False, msg
+    return True, msg.replace("demand", "raw BOM")
+
+
+def apply_table_upload(import_frame: pd.DataFrame, *, table_key: str, table_name: str, key_cols: list[str], bool_cols: list[str] | None = None) -> tuple[bool, str]:
+    missing_required = [name for name, spec in TABLE_SPECS[table_key].items() if spec.required and name not in import_frame.columns]
+    if missing_required:
+        return False, f"{table_name} import is missing required columns: " + ", ".join(missing_required)
+
+    errors = validate_with_specs(table_key, import_frame)
+    if table_key in {"rate_cards", "rate_charges"}:
+        date_cols = [c for c in ["effective_from", "effective_to", "contract_start", "contract_end"] if c in import_frame.columns]
+        errors += validate_dates(import_frame, date_cols)
+        if "effective_from" in import_frame.columns and "effective_to" in import_frame.columns:
+            errors += validate_date_ranges(import_frame, "effective_from", "effective_to", table_name)
+        if "contract_start" in import_frame.columns and "contract_end" in import_frame.columns:
+            errors += validate_date_ranges(import_frame, "contract_start", "contract_end", table_name)
+    if errors:
+        return False, "; ".join(sorted(set(errors)))
+
+    frame = import_frame.copy()
+    if bool_cols:
+        frame = normalize_bools(frame, bool_cols)
+
+    conn = get_conn()
+    with conn:
+        upsert_rows(conn, table_name, frame, key_cols)
+    return True, f"Imported {len(frame)} rows into {table_name}"
 
 
 def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str, dict[str, object]]:
@@ -949,29 +988,15 @@ Example: CN + OCEAN = 35 days.""")
     elif admin_screen == "Templates & Upload Hub":
         render_about(
             "Templates & Upload Hub",
-            "Central place to download all templates and upload supported master-demand files.\n\n"
-            "Use this page when onboarding or doing a bulk refresh.",
+            "Centralized MDM intake for required shipment setup data.\n\n"
+            "Use this page to manage all core imports from a small, non-redundant template set.",
         )
         st.subheader("Download all templates")
         render_template_downloads(prefix="hub")
 
         st.divider()
-        st.subheader("Demand upload")
-        st.caption("Upload demand_template.csv-compatible data. This appends rows to demand_lines.")
-        demand_upload = st.file_uploader("Upload demand csv", type=["csv"], key="hub_demand_upload")
-        if demand_upload is not None:
-            demand_df = pd.read_csv(demand_upload)
-            demand_edit = st.data_editor(demand_df, num_rows="dynamic", width="stretch", key="hub_demand_editor")
-            if st.button("Apply demand import", key="hub_apply_demand"):
-                ok, msg = apply_demand_import(demand_edit, supplier_key="hub_import_supplier_map")
-                if ok:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-
-        st.divider()
-        st.subheader("Pack master upload")
-        st.caption("Upload pack_mdm_template.csv-compatible data to update the canonical standard pack profile by SKU + supplier (single-pack-per-part, no default flag).")
+        st.subheader("1) Master pack data upload")
+        st.caption("Upload pack_mdm_template.csv with supplier and freight routing fields required to make shipments.")
         pack_upload = st.file_uploader("Upload pack master data csv", type=["csv"], key="hub_pack_mdm_upload")
         if pack_upload is not None:
             imported_pack = pd.read_csv(pack_upload)
@@ -986,6 +1011,83 @@ Example: CN + OCEAN = 35 days.""")
                     st.success(msg)
                 else:
                     st.error(msg)
+
+        st.divider()
+        st.subheader("2) Raw BOM upload")
+        st.caption("Upload raw_bom_template.csv with part_number and raw_qty. The app maps to SKU, then uses pack rules to translate into pack quantities during planning.")
+        raw_bom_upload = st.file_uploader("Upload raw BOM csv", type=["csv"], key="hub_raw_bom_upload")
+        if raw_bom_upload is not None:
+            raw_bom_df = pd.read_csv(raw_bom_upload)
+            raw_bom_edit = st.data_editor(raw_bom_df, num_rows="dynamic", width="stretch", key="hub_raw_bom_editor")
+            if st.button("Apply raw BOM import", key="hub_apply_raw_bom"):
+                ok, msg = apply_raw_bom_import(raw_bom_edit, supplier_key="hub_raw_bom_supplier_map")
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        st.divider()
+        st.subheader("3) Rate card and carrier upload")
+        st.caption("Upload carrier_template.csv, rate_cards_template.csv, and rate_charges_template.csv to maintain rating master data.")
+        carrier_upload = st.file_uploader("Upload carrier csv", type=["csv"], key="hub_carrier_upload")
+        if carrier_upload is not None:
+            carrier_df = pd.read_csv(carrier_upload)
+            carrier_edit = st.data_editor(carrier_df, num_rows="dynamic", width="stretch", key="hub_carrier_editor")
+            if st.button("Apply carrier import", key="hub_apply_carrier"):
+                ok, msg = apply_table_upload(carrier_edit, table_key="carrier", table_name="carrier", key_cols=["code"], bool_cols=["is_active"])
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        rate_card_upload = st.file_uploader("Upload rate cards csv", type=["csv"], key="hub_rate_card_upload")
+        if rate_card_upload is not None:
+            rate_card_df = pd.read_csv(rate_card_upload)
+            rate_card_edit = st.data_editor(rate_card_df, num_rows="dynamic", width="stretch", key="hub_rate_card_editor")
+            if st.button("Apply rate card import", key="hub_apply_rate_card"):
+                ok, msg = apply_table_upload(rate_card_edit, table_key="rate_cards", table_name="rate_card", key_cols=["mode", "service_scope", "equipment", "origin_type", "origin_code", "dest_type", "dest_code", "effective_from", "effective_to", "carrier_id"], bool_cols=["is_active"])
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        rate_charge_upload = st.file_uploader("Upload rate charges csv", type=["csv"], key="hub_rate_charge_upload")
+        if rate_charge_upload is not None:
+            rate_charge_df = pd.read_csv(rate_charge_upload)
+            rate_charge_edit = st.data_editor(rate_charge_df, num_rows="dynamic", width="stretch", key="hub_rate_charge_editor")
+            if st.button("Apply rate charge import", key="hub_apply_rate_charge"):
+                ok, msg = apply_table_upload(rate_charge_edit, table_key="rate_charges", table_name="rate_charge", key_cols=["rate_card_id", "charge_code", "charge_name", "calc_method", "effective_from", "effective_to"])
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        st.divider()
+        st.subheader("4) Lane data upload")
+        st.caption("Upload lanes_template.csv to maintain route defaults used by planning recommendations.")
+        lane_upload = st.file_uploader("Upload lanes csv", type=["csv"], key="hub_lane_upload")
+        if lane_upload is not None:
+            lane_df = pd.read_csv(lane_upload)
+            lane_edit = st.data_editor(lane_df, num_rows="dynamic", width="stretch", key="hub_lane_editor")
+            if st.button("Apply lane import", key="hub_apply_lane"):
+                ok, msg = apply_table_upload(lane_edit, table_key="lanes", table_name="lanes", key_cols=["origin_code", "dest_code"])
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+        with st.expander("Legacy demand upload (optional)", expanded=False):
+            st.caption("Upload demand_template.csv-compatible data. This appends rows to demand_lines.")
+            demand_upload = st.file_uploader("Upload demand csv", type=["csv"], key="hub_demand_upload")
+            if demand_upload is not None:
+                demand_df = pd.read_csv(demand_upload)
+                demand_edit = st.data_editor(demand_df, num_rows="dynamic", width="stretch", key="hub_demand_editor")
+                if st.button("Apply demand import", key="hub_apply_demand"):
+                    ok, msg = apply_demand_import(demand_edit, supplier_key="hub_import_supplier_map")
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
 
     elif admin_screen == "Data management":
         render_about("Data management", "Export/import JSON bundles, purge old demand, and compact DB.\n\nPrerequisites: none.\n\nSteps: download/upload bundle as needed, then run cleanup actions carefully.\n\nExample: export full bundle before large edits.")
