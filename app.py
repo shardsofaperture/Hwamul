@@ -29,6 +29,7 @@ from db import (
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
+from services.master_data_import import apply_pack_master_import
 from seed import TEMPLATE_SPECS, ensure_templates, seed_if_empty
 from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
 from validators import require_cols, validate_dates, validate_positive, validate_with_specs
@@ -196,6 +197,41 @@ def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_
     with conn:
         to_insert.to_sql("demand_lines", conn, if_exists="append", index=False)
     return True, f"Imported {len(to_insert)} demand rows"
+
+
+def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str]:
+    required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
+    missing_pack_cols = [col for col in required_pack_cols if col not in import_frame.columns]
+    if missing_pack_cols:
+        return False, (
+            "Pack master import is missing required column(s): "
+            + ", ".join(missing_pack_cols)
+            + ". Expected required columns: "
+            + ", ".join(required_pack_cols)
+        )
+
+    import_errors = validate_with_specs("pack_rules_import", import_frame)
+    if import_errors:
+        return False, "; ".join(import_errors)
+
+    conn = get_conn()
+    try:
+        result = apply_pack_master_import(conn, import_frame)
+    except ValueError as exc:
+        return False, str(exc)
+    except sqlite3.IntegrityError as exc:
+        return False, f"Pack master import failed with database integrity error: {exc}"
+
+    return (
+        True,
+        "Applied pack master import: "
+        f"suppliers={result.suppliers_upserted}, "
+        f"ship_from_locations={result.ship_from_locations_upserted}, "
+        f"skus={result.skus_upserted}, "
+        f"packaging_rules={result.packaging_rules_upserted}, "
+        f"ship_to_rows={result.ship_to_rows_replaced}, "
+        f"allowed_modes={result.allowed_modes_rows_replaced}",
+    )
 
 
 st.title("Local Logistics Planning App")
@@ -522,93 +558,12 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             st.write("Imported pack master preview (editable)")
             imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="pack_mdm_editor")
             if st.button("Apply pack master import", key="apply_pack_mdm"):
-                required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
-                missing_pack_cols = [col for col in required_pack_cols if col not in imported_pack_edit.columns]
-                if missing_pack_cols:
-                    st.error(
-                        "Pack master import is missing required column(s): "
-                        + ", ".join(missing_pack_cols)
-                        + ". Expected required columns: "
-                        + ", ".join(required_pack_cols)
-                    )
-                    st.stop()
-
-                import_errors = validate_with_specs("pack_rules_import", imported_pack_edit)
-                if import_errors:
-                    st.error("; ".join(import_errors))
-                    st.stop()
-
-                sku_lookup = sku_catalog[["sku_id", "part_number", "supplier_code"]].drop_duplicates()
-                merged_pack = imported_pack_edit.merge(sku_lookup, on=["part_number", "supplier_code"], how="left")
-                unresolved = merged_pack[merged_pack["sku_id"].isna()][["part_number", "supplier_code"]].drop_duplicates()
-                if not unresolved.empty:
-                    missing_keys = ", ".join([f"{r.part_number}/{r.supplier_code}" for r in unresolved.itertuples(index=False)])
-                    st.error(f"Could not map these part_number + supplier_code rows to an SKU: {missing_keys}")
-                    st.stop()
-
-                merged_pack = merged_pack.copy()
-                merged_pack["pack_name"] = merged_pack["pack_name"].astype(str) if "pack_name" in merged_pack.columns else ""
-                merged_pack["pack_name"] = merged_pack.apply(
-                    lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
-                    axis=1,
-                )
-                upsert_df = pd.DataFrame(
-                    {
-                        "sku_id": merged_pack["sku_id"].astype(int),
-                        "pack_name": merged_pack["pack_name"],
-                        "pack_type": "STANDARD",
-                        "is_default": 1,
-                        "units_per_pack": 1.0,
-                        "kg_per_unit": pd.to_numeric(merged_pack["pack_kg"], errors="coerce"),
-                        "pack_tare_kg": 0.0,
-                        "dim_l_m": pd.to_numeric(merged_pack["length_mm"], errors="coerce") / 1000.0,
-                        "dim_w_m": pd.to_numeric(merged_pack["width_mm"], errors="coerce") / 1000.0,
-                        "dim_h_m": pd.to_numeric(merged_pack["height_mm"], errors="coerce") / 1000.0,
-                        "min_order_packs": 1,
-                        "increment_packs": 1,
-                        "stackable": merged_pack["is_stackable"].fillna(0).astype(int),
-                        "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
-                    }
-                )
-
-                applied = 0
-                with conn:
-                    for row in upsert_df.itertuples(index=False):
-                        existing = conn.execute(
-                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY id ASC LIMIT 1",
-                            (int(row.sku_id),),
-                        ).fetchone()
-                        if existing:
-                            conn.execute(
-                                """
-                                UPDATE packaging_rules
-                                SET pack_name=?, pack_type=?, is_default=?, units_per_pack=?, kg_per_unit=?, pack_tare_kg=?,
-                                    dim_l_m=?, dim_w_m=?, dim_h_m=?, min_order_packs=?, increment_packs=?, stackable=?, max_stack=?
-                                WHERE id=?
-                                """,
-                                (
-                                    row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
-                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
-                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None, int(existing["id"]),
-                                ),
-                            )
-                        else:
-                            conn.execute(
-                                """
-                                INSERT INTO packaging_rules(
-                                    sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
-                                    dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    int(row.sku_id), row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
-                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
-                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None,
-                                ),
-                            )
-                        applied += 1
-                st.success(f"Imported {applied} standard pack profile row(s)")
-                st.rerun()
+                ok, msg = apply_pack_master_upload(imported_pack_edit)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
         with st.expander("Advanced pack rule editor (optional)", expanded=False):
             render_field_guide("pack_rules")
@@ -976,89 +931,11 @@ Example: CN + OCEAN = 35 days.""")
             imported_pack = pd.read_csv(pack_upload)
             imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="hub_pack_mdm_editor")
             if st.button("Apply pack master import", key="hub_apply_pack_mdm"):
-                required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
-                missing_pack_cols = [col for col in required_pack_cols if col not in imported_pack_edit.columns]
-                if missing_pack_cols:
-                    st.error("Pack master import is missing required column(s): " + ", ".join(missing_pack_cols))
-                    st.stop()
-
-                import_errors = validate_with_specs("pack_rules_import", imported_pack_edit)
-                if import_errors:
-                    st.error("; ".join(import_errors))
-                    st.stop()
-
-                sku_catalog = read_sku_catalog()
-                sku_lookup = sku_catalog[["sku_id", "part_number", "supplier_code"]].drop_duplicates()
-                merged_pack = imported_pack_edit.merge(sku_lookup, on=["part_number", "supplier_code"], how="left")
-                unresolved = merged_pack[merged_pack["sku_id"].isna()][["part_number", "supplier_code"]].drop_duplicates()
-                if not unresolved.empty:
-                    missing_keys = ", ".join([f"{r.part_number}/{r.supplier_code}" for r in unresolved.itertuples(index=False)])
-                    st.error(f"Could not map these part_number + supplier_code rows to an SKU: {missing_keys}")
-                    st.stop()
-
-                merged_pack = merged_pack.copy()
-                merged_pack["pack_name"] = merged_pack["pack_name"].astype(str) if "pack_name" in merged_pack.columns else ""
-                merged_pack["pack_name"] = merged_pack.apply(
-                    lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
-                    axis=1,
-                )
-                upsert_df = pd.DataFrame(
-                    {
-                        "sku_id": merged_pack["sku_id"].astype(int),
-                        "pack_name": merged_pack["pack_name"],
-                        "pack_type": "STANDARD",
-                        "is_default": 1,
-                        "units_per_pack": 1.0,
-                        "kg_per_unit": pd.to_numeric(merged_pack["pack_kg"], errors="coerce"),
-                        "pack_tare_kg": 0.0,
-                        "dim_l_m": pd.to_numeric(merged_pack["length_mm"], errors="coerce") / 1000.0,
-                        "dim_w_m": pd.to_numeric(merged_pack["width_mm"], errors="coerce") / 1000.0,
-                        "dim_h_m": pd.to_numeric(merged_pack["height_mm"], errors="coerce") / 1000.0,
-                        "min_order_packs": 1,
-                        "increment_packs": 1,
-                        "stackable": merged_pack["is_stackable"].fillna(0).astype(int),
-                        "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
-                    }
-                )
-
-                conn = get_conn()
-                applied = 0
-                with conn:
-                    for row in upsert_df.itertuples(index=False):
-                        existing = conn.execute(
-                            "SELECT id FROM packaging_rules WHERE sku_id = ? ORDER BY id ASC LIMIT 1",
-                            (int(row.sku_id),),
-                        ).fetchone()
-                        if existing:
-                            conn.execute(
-                                """
-                                UPDATE packaging_rules
-                                SET pack_name=?, pack_type=?, is_default=?, units_per_pack=?, kg_per_unit=?, pack_tare_kg=?,
-                                    dim_l_m=?, dim_w_m=?, dim_h_m=?, min_order_packs=?, increment_packs=?, stackable=?, max_stack=?
-                                WHERE id=?
-                                """,
-                                (
-                                    row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
-                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
-                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None, int(existing["id"]),
-                                ),
-                            )
-                        else:
-                            conn.execute(
-                                """
-                                INSERT INTO packaging_rules(
-                                    sku_id, pack_name, pack_type, is_default, units_per_pack, kg_per_unit, pack_tare_kg,
-                                    dim_l_m, dim_w_m, dim_h_m, min_order_packs, increment_packs, stackable, max_stack
-                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    int(row.sku_id), row.pack_name, row.pack_type, int(row.is_default), float(row.units_per_pack), float(row.kg_per_unit),
-                                    float(row.pack_tare_kg), row.dim_l_m, row.dim_w_m, row.dim_h_m, int(row.min_order_packs), int(row.increment_packs),
-                                    int(row.stackable), row.max_stack if pd.notna(row.max_stack) else None,
-                                ),
-                            )
-                        applied += 1
-                st.success(f"Applied pack master rows: {applied}")
+                ok, msg = apply_pack_master_upload(imported_pack_edit)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
 
     elif admin_screen == "Data management":
         render_about("Data management", "Export/import JSON bundles, purge old demand, and compact DB.\n\nPrerequisites: none.\n\nSteps: download/upload bundle as needed, then run cleanup actions carefully.\n\nExample: export full bundle before large edits.")
