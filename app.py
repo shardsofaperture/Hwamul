@@ -433,6 +433,91 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             st.success("Standard pack profile saved")
             st.rerun()
 
+        st.divider()
+        st.markdown("#### Bulk import standard-pack master data (SKU + vendor)")
+        st.caption(
+            "Use this file to manage pack master data in one place and map each row to a supplier-specific SKU via part_number + supplier_code. "
+            "For standard-pack modeling, this import fixes units_per_pack=1 and stores your pack weight in standard_pack_kg."
+        )
+        pack_mdm_template = Path("templates") / "pack_mdm_template.csv"
+        if pack_mdm_template.exists():
+            st.download_button(
+                "Download pack_mdm_template.csv",
+                data=pack_mdm_template.read_bytes(),
+                file_name="pack_mdm_template.csv",
+                mime="text/csv",
+            )
+        pack_upload = st.file_uploader(
+            "Upload pack master data csv",
+            type=["csv"],
+            key="pack_mdm_upload",
+            help="Columns: part_number, supplier_code, standard_pack_kg, dim_l_cm, dim_w_cm, dim_h_cm, stackable, optional max_stack/pack_name/is_default.",
+        )
+        if pack_upload is not None:
+            imported_pack = pd.read_csv(pack_upload)
+            st.write("Imported pack master preview (editable)")
+            imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="pack_mdm_editor")
+            if st.button("Apply pack master import", key="apply_pack_mdm"):
+                required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
+                missing_pack_cols = [col for col in required_pack_cols if col not in imported_pack_edit.columns]
+                if missing_pack_cols:
+                    st.error(
+                        "Pack master import is missing required column(s): "
+                        + ", ".join(missing_pack_cols)
+                        + ". Expected required columns: "
+                        + ", ".join(required_pack_cols)
+                    )
+                    st.stop()
+
+                import_errors = validate_with_specs("pack_rules_import", imported_pack_edit)
+                if import_errors:
+                    st.error("; ".join(import_errors))
+                    st.stop()
+
+                sku_lookup = sku_catalog[["sku_id", "part_number", "supplier_code"]].drop_duplicates()
+                merged_pack = imported_pack_edit.merge(sku_lookup, on=["part_number", "supplier_code"], how="left")
+                unresolved = merged_pack[merged_pack["sku_id"].isna()][["part_number", "supplier_code"]].drop_duplicates()
+                if not unresolved.empty:
+                    missing_keys = ", ".join([f"{r.part_number}/{r.supplier_code}" for r in unresolved.itertuples(index=False)])
+                    st.error(f"Could not map these part_number + supplier_code rows to an SKU: {missing_keys}")
+                    st.stop()
+
+                merged_pack = merged_pack.copy()
+                merged_pack["pack_name"] = merged_pack["pack_name"].astype(str) if "pack_name" in merged_pack.columns else ""
+                merged_pack["pack_name"] = merged_pack.apply(
+                    lambda r: r["pack_name"] if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
+                    axis=1,
+                )
+                if "is_default" not in merged_pack.columns:
+                    merged_pack["is_default"] = 1
+                merged_pack["is_default"] = merged_pack["is_default"].fillna(1).astype(int)
+
+                upsert_df = pd.DataFrame(
+                    {
+                        "sku_id": merged_pack["sku_id"].astype(int),
+                        "pack_name": merged_pack["pack_name"],
+                        "pack_type": "STANDARD",
+                        "is_default": merged_pack["is_default"],
+                        "units_per_pack": 1.0,
+                        "kg_per_unit": pd.to_numeric(merged_pack["standard_pack_kg"], errors="coerce"),
+                        "pack_tare_kg": 0.0,
+                        "dim_l_m": merged_pack["dim_l_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_w_m": merged_pack["dim_w_cm"].apply(normalize_pack_dimension_to_meters),
+                        "dim_h_m": merged_pack["dim_h_cm"].apply(normalize_pack_dimension_to_meters),
+                        "min_order_packs": 1,
+                        "increment_packs": 1,
+                        "stackable": merged_pack["stackable"].fillna(0).astype(int),
+                        "max_stack": merged_pack["max_stack"] if "max_stack" in merged_pack.columns else None,
+                    }
+                )
+
+                with conn:
+                    for sku_id in upsert_df.loc[upsert_df["is_default"] == 1, "sku_id"].drop_duplicates().tolist():
+                        conn.execute("UPDATE packaging_rules SET is_default = 0 WHERE sku_id = ?", (int(sku_id),))
+                    upsert_rows(conn, "packaging_rules", upsert_df, ["sku_id", "pack_name"])
+                st.success(f"Imported {len(upsert_df)} standard pack profile row(s)")
+                st.rerun()
+
         with st.expander("Advanced pack rule editor (optional)", expanded=False):
             render_field_guide("pack_rules")
             edited = st.data_editor(

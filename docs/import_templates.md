@@ -50,11 +50,38 @@ AXLE-2200,SUP_B,2026-04-02,400,Sample,AIR
 ```
 
 ## Pack-rule unit guidance (important)
+- `units_per_pack` means **how many order units are inside one physical pack**.
+  - Example: if SKU UOM is `KG` and one pallet is 500 kg, set `units_per_pack=500` and `kg_per_unit=1`.
+  - Example: if SKU UOM is `EA` and one carton contains 120 pieces, set `units_per_pack=120` and `kg_per_unit=<weight per piece>`.
+- In the **standard-pack master profile** workflow, the app uses `units_per_pack=1` and stores the full pack weight in `standard_pack_kg` (mapped to `kg_per_unit`).
+  - This is useful when you want one row = one standard pack with all dimensions/weight and do not want to manage per-unit math.
 - For `pack_rules` dimensions (`dim_l_cm`, `dim_w_cm`, `dim_h_cm`), use **centimeters** for pallet/cargo uploads with individual handling units.
   - Example: length `120`, width `80`, height `90`.
 - Legacy meter values are still accepted.
   - Example: length `1.20`, width `0.80`, height `0.90`.
 - Avoid mixing unit styles within the same import file when possible.
+
+## Pack master data import (`pack_mdm_template.csv`)
+Use this when you want a single master-data file for standard packs mapped by SKU + vendor.
+
+| Column | Required | Description |
+| --- | --- | --- |
+| `part_number` | Yes | SKU part number from `sku_master`. |
+| `supplier_code` | Yes | Supplier code to tie the row to the supplier-specific SKU. |
+| `pack_name` | No | Optional pack profile name; defaults to `STD_<part_number>`. |
+| `standard_pack_kg` | Yes | Gross weight for one standard pack. |
+| `dim_l_cm` | Yes | Pack length (cm, or legacy m). |
+| `dim_w_cm` | Yes | Pack width (cm, or legacy m). |
+| `dim_h_cm` | Yes | Pack height (cm, or legacy m). |
+| `stackable` | Yes | 1 or 0. |
+| `max_stack` | No | Max stack count when `stackable=1`. |
+| `is_default` | Yes | 1 to make the row default for that SKU. |
+
+Behavior on import:
+- Rows are mapped to `sku_id` using `part_number + supplier_code`.
+- Import writes to `packaging_rules` as a standard-pack profile (`pack_type=STANDARD`).
+- It sets `units_per_pack=1`, `pack_tare_kg=0`, `min_order_packs=1`, and `increment_packs=1`.
+- If `is_default=1`, existing default flags for that SKU are reset so only one default remains.
 
 ## Supplier/SKU/Pack structure for uploads
 - Model and upload data as **supplier-specific SKUs** (part number + supplier).
