@@ -1,8 +1,8 @@
 # Import Templates
 
-Use template download buttons in **Docs → Import Templates**.
+Use template download buttons in **Docs → Import Templates** or from upload screens like **Admin → Demand entry**.
 
-Templates are generated from in-app field specifications, so column names/examples match validation logic.
+Canonical source: persisted CSV files under `templates/`, regenerated at app startup by `seed.ensure_templates()` from `field_specs.TABLE_SPECS`. Docs and upload flows download these same persisted files, so headers/examples remain aligned with validation rules.
 
 ## Suggested import flow
 1. Download the template for the table you want to load.

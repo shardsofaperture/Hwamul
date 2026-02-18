@@ -2,8 +2,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+import csv
+import io
 
 from db import get_conn
+from field_specs import TABLE_SPECS
+
+
+TEMPLATE_SPECS: list[tuple[str, str]] = [
+    ("suppliers", "suppliers_template.csv"),
+    ("skus", "skus_template.csv"),
+    ("pack_rules", "pack_rules_template.csv"),
+    ("lead_times", "lead_times_template.csv"),
+    ("demand", "demand_template.csv"),
+    ("rate_cards", "rate_cards_template.csv"),
+    ("rate_charges", "rate_charges_template.csv"),
+    ("customs_hts", "customs_hts_template.csv"),
+]
 
 
 def seed_if_empty() -> None:
@@ -79,9 +94,16 @@ def seed_if_empty() -> None:
 def ensure_templates() -> None:
     template_dir = Path("templates")
     template_dir.mkdir(exist_ok=True)
-    (template_dir / "demand_template.csv").write_text(
-        "part_number,supplier_code,need_date,qty,coo_override,priority,phase,mode_override,service_scope,miles,notes\nMFG-88421,DEFAULT,2026-03-10,250,,High,Trial1,AIR,P2D,320,launch\n"
-    )
+
+    for table_key, fname in TEMPLATE_SPECS:
+        cols = list(TABLE_SPECS[table_key].keys())
+        sample_row = [TABLE_SPECS[table_key][col].example for col in cols]
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(cols)
+        writer.writerow(sample_row)
+        (template_dir / fname).write_text(buffer.getvalue(), encoding="utf-8")
+
     (template_dir / "bom_template.csv").write_text(
         "part_number,supplier_code,need_date,qty\nINT-100045,DEFAULT,2026-03-17,96\n"
     )
