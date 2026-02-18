@@ -55,6 +55,14 @@ CANONICAL_INCOTERMS = {"EXW", "FCA", "CPT", "CIP", "DAP", "DPU", "DDP", "FAS", "
 STRICT_PORT_CODE_REGEX = re.compile(r"^[A-Z]{5}$")
 
 
+def _normalize_code_text(raw_value: object) -> str:
+    """Normalize key identifiers to a canonical import-safe format."""
+    text = str(raw_value or "").strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return re.sub(r"\s+", "_", text).upper()
+
+
 def _split_pipe_list(raw_value: object) -> list[str]:
     return normalize_delimited_tokens(raw_value, delimiter="|")
 
@@ -81,8 +89,8 @@ def _canonical_ship_from_key(row: pd.Series) -> str:
 
 def _normalize_import(import_df: pd.DataFrame) -> pd.DataFrame:
     data = import_df.copy()
-    data["part_number"] = data["part_number"].astype(str).str.strip().str.upper()
-    data["supplier_code"] = data["supplier_code"].astype(str).str.strip().str.upper()
+    data["part_number"] = data["part_number"].apply(_normalize_code_text)
+    data["supplier_code"] = data["supplier_code"].apply(_normalize_code_text)
     data["incoterm"] = data["incoterm"].astype(str).str.strip().str.upper()
     data["incoterm_named_place"] = data["incoterm_named_place"].astype(str).str.strip()
     data["ship_from_city"] = data["ship_from_city"].astype(str).str.strip().str.upper()
@@ -92,7 +100,7 @@ def _normalize_import(import_df: pd.DataFrame) -> pd.DataFrame:
 
     data["pack_name"] = data["pack_name"].astype(str) if "pack_name" in data.columns else ""
     data["pack_name"] = data.apply(
-        lambda r: str(r["pack_name"]).strip() if str(r["pack_name"]).strip() and str(r["pack_name"]).strip().lower() != "nan" else f"STD_{r['part_number']}",
+        lambda r: _normalize_code_text(r["pack_name"]) if _normalize_code_text(r["pack_name"]) else f"STD_{r['part_number']}",
         axis=1,
     )
 

@@ -146,6 +146,32 @@ def test_apply_pack_master_upload_returns_validation_payload(tmp_path: Path, mon
     assert payload["summary"]["failed"] == 1
 
 
+
+def test_apply_pack_master_upload_accepts_lowercase_and_spaces(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+    db.run_migrations()
+
+    import app
+
+    upload_df = _sample_df().copy()
+    upload_df.loc[0, "supplier_code"] = "default supplier"
+    upload_df.loc[0, "part_number"] = "mfg 88421"
+    upload_df.loc[0, "pack_name"] = "std mfg 88421"
+
+    ok, _msg, payload = app.apply_pack_master_upload(upload_df)
+
+    assert ok
+    assert payload["summary"]["failed"] == 0
+
+    conn = db.get_conn()
+    supplier = conn.execute("SELECT supplier_code FROM suppliers WHERE supplier_code = ?", ("DEFAULT_SUPPLIER",)).fetchone()
+    sku = conn.execute("SELECT part_number FROM sku_master WHERE part_number = ?", ("MFG_88421",)).fetchone()
+    pack = conn.execute("SELECT pack_name FROM packaging_rules WHERE pack_name = ?", ("STD_MFG_88421",)).fetchone()
+
+    assert supplier is not None
+    assert sku is not None
+    assert pack is not None
+
 def test_normalize_delimited_tokens_dedupes_and_normalizes(tmp_path: Path, monkeypatch) -> None:
     db = _load_db_module(tmp_path, monkeypatch)
 
