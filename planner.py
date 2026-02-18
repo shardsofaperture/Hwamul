@@ -5,12 +5,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
+from constraints_engine import max_units_per_conveyance
+from fit_engine import equipment_count_for_packs
+from math import ceil
 
 from models import (
     Equipment,
     PackagingRule,
     chargeable_air_weight_kg,
-    estimate_equipment_count,
     rounded_order_packs,
 )
 
@@ -134,6 +136,7 @@ def recommend_modes(
     excess_units = max(0.0, shipped_units - requested_units)
     total_weight = (shipped_units / pack_rule.units_per_pack) * pack_rule.gross_pack_weight_kg
     total_volume = (shipped_units / pack_rule.units_per_pack) * pack_rule.pack_cube_m3
+    total_packs = int(shipped_packs)
 
     recs = []
     phase_defaults = phase_defaults or {}
@@ -221,7 +224,31 @@ def recommend_modes(
             util = min(1.0, total_weight / eq.max_payload_kg)
         else:
             eq = equipments[0]
-            eq_count = estimate_equipment_count(total_volume, total_weight, eq)
+            fit = max_units_per_conveyance(
+                sku_id=sku_id,
+                pack_rule={
+                    "units_per_pack": pack_rule.units_per_pack,
+                    "kg_per_unit": pack_rule.kg_per_unit,
+                    "pack_tare_kg": pack_rule.pack_tare_kg,
+                    "dim_l_m": pack_rule.dim_l_norm_m,
+                    "dim_w_m": pack_rule.dim_w_norm_m,
+                    "dim_h_m": pack_rule.dim_h_norm_m,
+                    "stackable": int(bool(pack_rule.stackable)),
+                    "max_stack": pack_rule.max_stack,
+                },
+                equipment={
+                    "name": eq.name,
+                    "equipment_code": eq.name,
+                    "mode": mode,
+                    "length_m": eq.length_m,
+                    "width_m": eq.width_m,
+                    "height_m": eq.height_m,
+                    "max_payload_kg": eq.max_payload_kg,
+                },
+                context={"container_on_chassis": mode in {"TRUCK", "DRAY"}},
+            )
+            packs_fit = int(fit["max_units"])
+            eq_count = equipment_count_for_packs(total_packs, packs_fit)
             rate = next((
                 r for r in rates
                 if norm_mode(r.get("mode")) == mode
@@ -292,6 +319,15 @@ def recommend_modes(
                 "utilization_pct": round(util * 100, 1),
                 "cube_utilization": round(min(1.0, (total_volume / (eq_count * eq.volume_m3)) if eq_count and eq.volume_m3 else 0.0), 4),
                 "weight_utilization": round(min(1.0, (total_weight / (eq_count * eq.max_payload_kg)) if eq_count and eq.max_payload_kg else 0.0), 4),
+                "fit_diagnostics": {
+                    "engine": "constraints_engine",
+                    "api": "max_units_per_conveyance",
+                    "version": "1.0.0",
+                } if mode != "AIR" else {
+                    "engine": "air_weight_only",
+                    "api": "chargeable_air_weight_kg",
+                    "version": "1.0.0",
+                },
             }
         )
 
@@ -310,7 +346,9 @@ def build_shipments(tranches: list[dict], equipment_map: dict[str, Equipment]):
         eq = normalized_eq[mode]
         total_volume = sum(r["volume_m3"] for r in rows)
         total_weight = sum(r["weight_kg"] for r in rows)
-        count = estimate_equipment_count(total_volume, total_weight, eq)
+        by_volume = ceil(total_volume / eq.volume_m3) if eq.volume_m3 else 0
+        by_weight = ceil(total_weight / eq.max_payload_kg) if eq.max_payload_kg else 0
+        count = max(1, by_volume, by_weight) if (by_volume or by_weight) else 0
         utilization = max(
             total_volume / (count * eq.volume_m3) if eq.volume_m3 else 0,
             total_weight / (count * eq.max_payload_kg) if eq.max_payload_kg else 0,
@@ -322,6 +360,11 @@ def build_shipments(tranches: list[dict], equipment_map: dict[str, Equipment]):
                 "utilization_pct": round(min(1.0, utilization) * 100, 1),
                 "ship_by_date": min(r["ship_by"] for r in rows),
                 "cost": round(sum(r["cost"] for r in rows), 2),
+                "fit_diagnostics": {
+                    "engine": "volume_weight_rollup",
+                    "api": "build_shipments",
+                    "version": "1.0.0",
+                },
             }
         )
     return outputs

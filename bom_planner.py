@@ -10,7 +10,8 @@ from typing import Any
 import pandas as pd
 
 from batch_planner import plan_trucks_mix_ok
-from fit_engine import equipment_capacity, pack_gross_kg, pack_volume_m3, packs_per_equipment, required_packs_for_kg
+from constraints_engine import max_units_per_conveyance
+from fit_engine import equipment_capacity, pack_gross_kg, pack_volume_m3, required_packs_for_kg
 from planner import norm_mode, norm_equipment_code
 
 REQUIRED_COLUMNS = ["phase_name", "need_date", "part_number", "required_kg"]
@@ -220,11 +221,11 @@ def generate_container_plan(conn: sqlite3.Connection, bom_run_id: int, policy: B
             if not pack_rule:
                 continue
             try:
-                fit = packs_per_equipment(pack_rule, selected)
+                fit = max_units_per_conveyance(sku_id, pack_rule, selected, context={})
                 caps = equipment_capacity(selected)
             except ValueError:
                 continue
-            packs_fit = int(fit["packs_fit"])
+            packs_fit = int(fit["max_units"])
             if packs_fit <= 0:
                 continue
             packs_req = int(row["packs_required"])
@@ -243,6 +244,7 @@ def generate_container_plan(conn: sqlite3.Connection, bom_run_id: int, policy: B
                     "cube_util": (packs_req * pvol) / (containers * caps["eq_volume_m3"]),
                     "weight_util": (packs_req * pweight) / (containers * caps["max_payload_kg"]),
                     "limiting_constraint": fit["limiting_constraint"],
+                    "fit_diagnostics": "constraints_engine:max_units_per_conveyance@1.0.0",
                 }
             )
         conn.executemany(

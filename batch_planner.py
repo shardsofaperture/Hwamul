@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import Any
 
-from fit_engine import equipment_capacity, pack_gross_kg, pack_volume_m3, packs_per_equipment, required_packs_for_kg
+from constraints_engine import max_units_per_conveyance
+from fit_engine import equipment_capacity, pack_gross_kg, pack_volume_m3, required_packs_for_kg
 
 
 POLICY_NO_MIX = "NO_MIX"
@@ -59,8 +60,8 @@ def plan_containers_no_mix(
         sku_id = int(req["sku_id"])
         pack_rule = req["pack_rule"]
         qty = required_packs_for_kg(float(req["required_kg"]), pack_rule)
-        fit = packs_per_equipment(pack_rule, container_equipment)
-        packs_fit = int(fit["packs_fit"])
+        fit = max_units_per_conveyance(sku_id, pack_rule, container_equipment, context={})
+        packs_fit = int(fit["max_units"])
         if packs_fit <= 0:
             raise ValueError(f"SKU {sku_id} cannot fit selected container/equipment")
         containers_needed = ceil(int(qty["packs_required"]) / packs_fit)
@@ -80,6 +81,7 @@ def plan_containers_no_mix(
                 "packs_fit": packs_fit,
                 "containers_needed": containers_needed,
                 "limiting_constraint": fit["limiting_constraint"],
+                "fit_diagnostics": {"engine": "constraints_engine", "api": "max_units_per_conveyance", "version": "1.0.0"},
                 "cube_util": (used_volume / total_cube_cap) if total_cube_cap > 0 else 0.0,
                 "weight_util": (used_weight / total_weight_cap) if total_weight_cap > 0 else 0.0,
             }
@@ -136,8 +138,13 @@ def plan_trucks_mix_ok(
             }
         )
 
-        fit_alone = packs_per_equipment(pack_rule, truck_equipment)
-        fit_alone_packs = int(fit_alone["packs_fit"])
+        fit_alone = max_units_per_conveyance(
+            sku_id,
+            pack_rule,
+            truck_equipment,
+            context={"container_on_chassis": True},
+        )
+        fit_alone_packs = int(fit_alone["max_units"])
         if fit_alone_packs <= 0:
             raise ValueError(f"SKU {sku_id} cannot fit selected truck equipment")
         no_mix_baseline += ceil(packs_required / fit_alone_packs)
@@ -209,6 +216,7 @@ def plan_trucks_mix_ok(
         "trucks": per_truck_rows,
         "no_mix_baseline_truck_count": no_mix_baseline,
         "residuals": dict(residuals),
+        "fit_diagnostics": {"engine": "constraints_engine", "api": "max_units_per_conveyance", "version": "1.0.0"},
     }
 
 
@@ -229,8 +237,13 @@ def plan_trucks_no_mix(requirements: list[dict[str, Any]], truck_equipment: dict
             "required_kg": float(req["required_kg"]),
             **qty,
         })
-        fit = packs_per_equipment(req["pack_rule"], truck_equipment)
-        packs_fit = int(fit["packs_fit"])
+        fit = max_units_per_conveyance(
+            int(req["sku_id"]),
+            req["pack_rule"],
+            truck_equipment,
+            context={"container_on_chassis": True},
+        )
+        packs_fit = int(fit["max_units"])
         if packs_fit <= 0:
             raise ValueError(f"SKU {req['sku_id']} cannot fit selected truck equipment")
         remaining = int(qty["packs_required"])
@@ -260,4 +273,5 @@ def plan_trucks_no_mix(requirements: list[dict[str, Any]], truck_equipment: dict
         "trucks": truck_rows,
         "no_mix_baseline_truck_count": count,
         "residuals": {},
+        "fit_diagnostics": {"engine": "constraints_engine", "api": "max_units_per_conveyance", "version": "1.0.0"},
     }

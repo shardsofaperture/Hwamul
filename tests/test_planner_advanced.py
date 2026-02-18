@@ -13,7 +13,7 @@ def test_recommend_modes_uses_rate_cards_and_truck_legs():
     rule = PackagingRule(10, 5, 1, 1.0, 1.0, 1.0, part_number="P")
     cards = [
         {"id": 1, "is_active": 1, "mode": "OCEAN", "equipment": "40DV", "service_scope": "P2D", "origin_type": "PORT", "origin_code": "USLAX", "dest_type": "CITY", "dest_code": "PLANT1", "effective_from": "2025-01-01", "effective_to": None, "priority": 1, "base_rate": 1000, "uom_pricing": "PER_CONTAINER", "min_charge": None, "currency": "USD"},
-        {"id": 2, "is_active": 1, "mode": "TRUCK", "equipment": "53FT", "service_scope": "D2D", "origin_type": "CITY", "origin_code": "USLAX", "dest_type": "CITY", "dest_code": "PLANT1", "effective_from": "2025-01-01", "effective_to": None, "priority": 1, "base_rate": 2, "uom_pricing": "PER_MILE", "min_charge": None, "currency": "USD"},
+        {"id": 2, "is_active": 1, "mode": "TRUCK", "equipment": "TRL_53_STD", "service_scope": "D2D", "origin_type": "CITY", "origin_code": "USLAX", "dest_type": "CITY", "dest_code": "PLANT1", "effective_from": "2025-01-01", "effective_to": None, "priority": 1, "base_rate": 2, "uom_pricing": "PER_MILE", "min_charge": None, "currency": "USD"},
     ]
     recs = recommend_modes(
         sku_id=1,
