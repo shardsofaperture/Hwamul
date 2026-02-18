@@ -91,3 +91,56 @@ def test_pack_master_import_replace_set_behavior(tmp_path: Path, monkeypatch) ->
 
     assert [r["destination_code"] for r in ship_tos] == ["USLAX_DC01"]
     assert [r["mode_code"] for r in modes] == ["OCEAN"]
+
+
+def test_pack_master_validation_report_hard_fail_rules() -> None:
+    from services.master_data_import import validate_pack_master_import
+
+    df = _sample_df().copy()
+    df.loc[0, "pack_kg"] = 0
+    df.loc[0, "length_mm"] = -1
+    df.loc[0, "allowed_modes"] = "OCEAN|RAIL"
+    df.loc[0, "incoterm"] = "XYZ"
+    df.loc[0, "is_stackable"] = 1
+    df.loc[0, "max_stack"] = ""
+
+    report = validate_pack_master_import(df)
+
+    codes = {issue.code for issue in report.errors}
+    assert "NON_POSITIVE_VALUE" in codes
+    assert "INVALID_MODE_TOKEN" in codes
+    assert "INVALID_INCOTERM" in codes
+    assert "INVALID_MAX_STACK" in codes
+    assert report.summary["failed"] == 1
+    assert report.summary["accepted"] == 0
+
+
+def test_pack_master_validation_report_warnings() -> None:
+    from services.master_data_import import validate_pack_master_import
+
+    df = pd.concat([_sample_df(), _sample_df()], ignore_index=True)
+    df.loc[0, "ship_from_port_code"] = "SHA"
+
+    report = validate_pack_master_import(df)
+
+    warning_codes = {issue.code for issue in report.warnings}
+    assert "WEAK_PORT_CODE_FORMAT" in warning_codes
+    assert "DUPLICATE_SUPPLIER_PART_VARIANT" in warning_codes
+    assert report.summary["warned"] >= 1
+
+
+def test_apply_pack_master_upload_returns_validation_payload(tmp_path: Path, monkeypatch) -> None:
+    db = _load_db_module(tmp_path, monkeypatch)
+    db.run_migrations()
+
+    import app
+
+    report_df = _sample_df().copy()
+    report_df.loc[0, "allowed_modes"] = "OCEAN|RAIL"
+
+    ok, msg, payload = app.apply_pack_master_upload(report_df)
+
+    assert not ok
+    assert "failed validation" in msg
+    assert "errors" in payload
+    assert payload["summary"]["failed"] == 1

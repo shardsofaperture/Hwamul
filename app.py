@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 from math import ceil
 from datetime import date
@@ -29,7 +30,10 @@ from db import (
 from models import Equipment, PackagingRule
 from planner import allocate_tranches, build_shipments, recommend_modes, customs_report, phase_cost_rollup, norm_mode
 from rate_engine import RateTestInput, compute_rate_total, select_best_rate_card
-from services.master_data_import import apply_pack_master_import
+from services.master_data_import import (
+    apply_pack_master_import,
+    validate_pack_master_import,
+)
 from seed import TEMPLATE_SPECS, ensure_templates, seed_if_empty
 from field_specs import TABLE_SPECS, build_help_text, field_guide_df, table_column_config
 from validators import require_cols, validate_dates, validate_positive, validate_with_specs
@@ -199,29 +203,65 @@ def apply_demand_import(import_frame: pd.DataFrame, supplier_key: str = "import_
     return True, f"Imported {len(to_insert)} demand rows"
 
 
-def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str]:
+def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str, dict[str, object]]:
     required_pack_cols = [name for name, spec in TABLE_SPECS["pack_rules_import"].items() if spec.required]
     missing_pack_cols = [col for col in required_pack_cols if col not in import_frame.columns]
+
+    validation_report = validate_pack_master_import(import_frame)
+    report_payload = validation_report.as_dict()
+
     if missing_pack_cols:
         return False, (
             "Pack master import is missing required column(s): "
             + ", ".join(missing_pack_cols)
             + ". Expected required columns: "
             + ", ".join(required_pack_cols)
-        )
+        ), report_payload
 
     import_errors = validate_with_specs("pack_rules_import", import_frame)
     if import_errors:
-        return False, "; ".join(import_errors)
+        report_payload["errors"].extend(
+            {
+                "row_number": 0,
+                "field": "row",
+                "code": "FIELD_SPEC_VALIDATION",
+                "message": err,
+            }
+            for err in import_errors
+        )
+        report_payload["summary"]["failed"] = int(report_payload["summary"]["failed"]) or len(import_frame.index)
+        report_payload["summary"]["accepted"] = max(int(report_payload["summary"]["total"]) - int(report_payload["summary"]["failed"]), 0)
+        return False, "; ".join(import_errors), report_payload
+
+    if validation_report.errors:
+        first_five = "; ".join(
+            f"row {issue.row_number} {issue.field}: {issue.message}"
+            for issue in validation_report.errors[:5]
+        )
+        message = f"Pack master import failed validation with {len(validation_report.errors)} error(s). {first_five}"
+        return False, message, report_payload
 
     conn = get_conn()
     try:
         result = apply_pack_master_import(conn, import_frame)
     except ValueError as exc:
-        return False, str(exc)
+        return False, str(exc), report_payload
     except sqlite3.IntegrityError as exc:
-        return False, f"Pack master import failed with database integrity error: {exc}"
+        return False, f"Pack master import failed with database integrity error: {exc}", report_payload
 
+    report_payload["summary"]["affected_entities"]["upserted"] = {
+        "suppliers": result.suppliers_upserted,
+        "ship_from_locations": result.ship_from_locations_upserted,
+        "skus": result.skus_upserted,
+        "packaging_rules": result.packaging_rules_upserted,
+        "ship_to_rows": result.ship_to_rows_replaced,
+        "allowed_modes_rows": result.allowed_modes_rows_replaced,
+    }
+    warning_suffix = (
+        f"; warnings={len(validation_report.warnings)}"
+        if validation_report.warnings
+        else ""
+    )
     return (
         True,
         "Applied pack master import: "
@@ -230,7 +270,9 @@ def apply_pack_master_upload(import_frame: pd.DataFrame) -> tuple[bool, str]:
         f"skus={result.skus_upserted}, "
         f"packaging_rules={result.packaging_rules_upserted}, "
         f"ship_to_rows={result.ship_to_rows_replaced}, "
-        f"allowed_modes={result.allowed_modes_rows_replaced}",
+        f"allowed_modes={result.allowed_modes_rows_replaced}"
+        f"{warning_suffix}",
+        report_payload,
     )
 
 
@@ -558,7 +600,11 @@ Example: supplier_code MAEU, supplier_name Maersk Line, incoterms_ref FOB SHANGH
             st.write("Imported pack master preview (editable)")
             imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="pack_mdm_editor")
             if st.button("Apply pack master import", key="apply_pack_mdm"):
-                ok, msg = apply_pack_master_upload(imported_pack_edit)
+                ok, msg, report_payload = apply_pack_master_upload(imported_pack_edit)
+                st.caption("Validation report (JSON audit payload)")
+                st.code(json.dumps(report_payload, indent=2), language="json")
+                if report_payload.get("warnings"):
+                    st.warning(f"Validation warnings: {len(report_payload['warnings'])}")
                 if ok:
                     st.success(msg)
                     st.rerun()
@@ -931,7 +977,11 @@ Example: CN + OCEAN = 35 days.""")
             imported_pack = pd.read_csv(pack_upload)
             imported_pack_edit = st.data_editor(imported_pack, num_rows="dynamic", width="stretch", key="hub_pack_mdm_editor")
             if st.button("Apply pack master import", key="hub_apply_pack_mdm"):
-                ok, msg = apply_pack_master_upload(imported_pack_edit)
+                ok, msg, report_payload = apply_pack_master_upload(imported_pack_edit)
+                st.caption("Validation report (JSON audit payload)")
+                st.code(json.dumps(report_payload, indent=2), language="json")
+                if report_payload.get("warnings"):
+                    st.warning(f"Validation warnings: {len(report_payload['warnings'])}")
                 if ok:
                     st.success(msg)
                 else:
