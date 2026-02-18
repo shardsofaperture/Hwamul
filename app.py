@@ -674,8 +674,8 @@ Example: CN + OCEAN = 35 days.""")
         JOIN suppliers s ON s.supplier_id = sm.supplier_id
         ORDER BY d.id
         """, get_conn())
-        render_field_guide("demand")
-        edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("demand"), disabled=["part_number", "supplier_code", "sku_label"])
+        render_field_guide("demand_grid")
+        edited = st.data_editor(source, num_rows="dynamic", width="stretch", column_config=table_column_config("demand_grid"), disabled=["part_number", "supplier_code", "sku_label"])
         demand_template = Path("templates") / "demand_template.csv"
         if demand_template.exists():
             st.download_button("Download demand_template.csv", data=demand_template.read_bytes(), file_name="demand_template.csv", mime="text/csv")
@@ -685,11 +685,27 @@ Example: CN + OCEAN = 35 days.""")
             imported = pd.read_csv(upload)
             st.write("Imported preview (editable)")
             with st.expander("Field guide (columns)", expanded=False):
-                st.markdown("Imported demand columns should include part_number, need_date (YYYY-MM-DD), qty (>=0), and optional supplier_code/coo_override/priority/notes/phase/mode_override/service_scope/miles.")
+                st.markdown("Imported demand columns must include part_number, need_date (YYYY-MM-DD), qty (>=0), and optional supplier_code/coo_override/priority/notes/phase/mode_override/service_scope/miles.")
             imported_edit = st.data_editor(imported, num_rows="dynamic", width="stretch")
             if st.button("Append imported rows"):
-                sku_catalog = read_sku_catalog()
                 import_frame = imported_edit.copy()
+                required_import_cols = [name for name, spec in TABLE_SPECS["demand_import"].items() if spec.required]
+                missing_required = [col for col in required_import_cols if col not in import_frame.columns]
+                if missing_required:
+                    st.error(
+                        "Demand import is missing required column(s): "
+                        + ", ".join(missing_required)
+                        + ". Expected required columns: "
+                        + ", ".join(required_import_cols)
+                    )
+                    st.stop()
+
+                import_errors = validate_with_specs("demand_import", import_frame) + validate_dates(import_frame, ["need_date"])
+                if import_errors:
+                    st.error("; ".join(import_errors))
+                    st.stop()
+
+                sku_catalog = read_sku_catalog()
                 supplier_choices = st.session_state.setdefault("import_supplier_map", {})
                 merged, map_errors = map_import_demand_rows(import_frame, sku_catalog, supplier_choices)
                 if "supplier_code" not in import_frame.columns:
@@ -716,7 +732,7 @@ Example: CN + OCEAN = 35 days.""")
             st.warning("Use CSV import with supplier_code to map to sku_id.")
 
         if st.button("Save changes", key="save_demand"):
-            errors = validate_with_specs("demand", edited) + validate_dates(edited, ["need_date"])
+            errors = validate_with_specs("demand_grid", edited) + validate_dates(edited, ["need_date"])
             if errors:
                 st.error("; ".join(errors))
             else:
