@@ -57,6 +57,18 @@ TABLE_SPECS: dict[str, dict[str, FieldSpec]] = {
         "max_stack": FieldSpec("int", min_value=1, description="Max stack count when stackable", example="3"),
         "is_default": FieldSpec("bool", required=True, description="Default rule for this SKU", example="1"),
     },
+    "pack_rules_import": {
+        "part_number": FieldSpec("text", required=True, max_length=64, regex=r"^[A-Z0-9_.-]{2,64}$", allowed_chars="A-Z, 0-9, ., _, -", description="Part number from SKU master", example="MFG-88421"),
+        "supplier_code": FieldSpec("text", required=True, max_length=32, regex=r"^[A-Z0-9_-]{2,32}$", allowed_chars="A-Z, 0-9, _, -", description="Supplier code for SKU/vendor mapping", example="DEFAULT"),
+        "pack_name": FieldSpec("text", max_length=64, regex=r"^[A-Z0-9_.-]{2,64}$", allowed_chars="A-Z, 0-9, ., _, -", description="Optional pack profile name", example="STD_MFG-88421", notes="Leave blank to auto-generate STD_<part_number>."),
+        "standard_pack_kg": FieldSpec("decimal", required=True, min_value=0.001, description="Gross weight for one standard pack", example="24.5", notes="Import sets units_per_pack=1 and pack_tare_kg=0 so this is the master standard-pack weight."),
+        "dim_l_cm": FieldSpec("decimal", required=True, min_value=0.01, description="Pack length input shown in centimeters; stored as meters", example="120", notes="Enter centimeters (e.g., 120). Legacy meter input (e.g., 1.20) is also accepted."),
+        "dim_w_cm": FieldSpec("decimal", required=True, min_value=0.01, description="Pack width input shown in centimeters; stored as meters", example="80", notes="Enter centimeters (e.g., 80). Legacy meter input (e.g., 0.80) is also accepted."),
+        "dim_h_cm": FieldSpec("decimal", required=True, min_value=0.01, description="Pack height input shown in centimeters; stored as meters", example="90", notes="Enter centimeters (e.g., 90). Legacy meter input (e.g., 0.90) is also accepted."),
+        "stackable": FieldSpec("bool", required=True, description="Whether packs can stack", example="1"),
+        "max_stack": FieldSpec("int", min_value=1, description="Max stack count when stackable", example="3"),
+        "is_default": FieldSpec("bool", required=True, description="Set to 1 for the default standard pack profile", example="1"),
+    },
     "lead_times": {
         "country_of_origin": FieldSpec("text", required=True, max_length=2, regex=r"^[A-Z]{2}$", allowed_chars="A-Z", description="COO ISO-2", example="CN"),
         "mode": FieldSpec("text", required=True, max_length=24, choices=["TRUCK", "OCEAN", "AIR"], description="Transport mode", example="OCEAN"),
